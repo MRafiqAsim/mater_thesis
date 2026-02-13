@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""
+Ingestion and Anonymization Pipeline
+
+Main entry point for processing raw data through Bronze and Silver layers.
+
+Usage:
+    python run_ingestion.py --pst /path/to/emails.pst --output /path/to/data
+    python run_ingestion.py --documents /path/to/docs --output /path/to/data
+    python run_ingestion.py --bronze /path/to/bronze --silver /path/to/silver
+
+Steps:
+    1. Extract emails from PST files → Bronze layer
+    2. Parse documents (PDF, DOCX, etc.) → Bronze layer
+    3. Chunk, detect PII, anonymize → Silver layer
+    4. Evaluate anonymization accuracy (if ground truth provided)
+"""
+
+import argparse
+import json
+import logging
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from ingestion.pst_extractor import PSTExtractor
+from ingestion.document_parser import DocumentParser
+from ingestion.bronze_loader import BronzeLayerLoader
+from anonymization.silver_processor import SilverLayerProcessor
+from conflict_handling.pii_evaluation import PIIEvaluator, GroundTruthLoader
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+def extract_pst_to_bronze(
+    pst_path: str,
+    bronze_path: str,
+    attachment_dir: Optional[str] = None
+) -> dict:
+    """
+    Extract emails from PST file to Bronze layer.
+
+    Args:
+        pst_path: Path to PST file
+        bronze_path: Output Bronze layer path
+        attachment_dir: Directory for attachments
+
+    Returns:
+        Extraction statistics
+    """
+    logger.info(f"Extracting PST: {pst_path}")
+
+    # Initialize extractor
+    extractor = PSTExtractor(
+        extract_attachments=True,
+        attachment_output_dir=attachment_dir or f"{bronze_path}/attachments"
+    )
+
+    # Initialize loader
+    loader = BronzeLayerLoader(bronze_path=bronze_path)
+
+    # Progress callback
+    def progress(count, message):
+        if count % 500 == 0:
+            logger.info(f"Progress: {count} emails - {message}")
+
+    # Extract and load
+    try:
+        emails = extractor.extract(pst_path, progress_callback=progress)
+        stats = loader.load_emails_batch(emails, batch_size=100)
+        loader.save_metadata()
+
+        logger.info(f"PST extraction complete: {stats}")
+        return stats
+
+    except Exception as e:
+        logger.error(f"PST extraction failed: {e}")
+        raise
+
+
+def parse_documents_to_bronze(
+    docs_path: str,
+    bronze_path: str,
+    extensions: Optional[list] = None
+) -> dict:
+    """
+    Parse documents to Bronze layer.
+
+    Args:
+        docs_path: Path to documents directory
+        bronze_path: Output Bronze layer path
+        extensions: File extensions to process
+
+    Returns:
+        Processing statistics
+    """
+    logger.info(f"Parsing documents from: {docs_path}")
+
+    extensions = extensions or [".pdf", ".docx", ".xlsx", ".pptx", ".txt"]
+
+    # Initialize parser and loader
+    parser = DocumentParser(extract_tables=True)
+    loader = BronzeLayerLoader(bronze_path=bronze_path)
+
+    # Find documents
+    docs_dir = Path(docs_path)
+    doc_files = []
+    for ext in extensions:
+        doc_files.extend(docs_dir.rglob(f"*{ext}"))
+
+    logger.info(f"Found {len(doc_files)} documents to process")
+
+    # Process documents
+    for i, doc_path in enumerate(doc_files):
+        try:
+            document = parser.parse(doc_path)
+            loader.load_document(document)
+
+            if (i + 1) % 50 == 0:
+                logger.info(f"Processed {i + 1}/{len(doc_files)} documents")
+
+        except Exception as e:
+            logger.warning(f"Failed to process {doc_path}: {e}")
+
+    stats = loader.get_stats()
+    loader.save_metadata()
+
+    logger.info(f"Document parsing complete: {stats}")
+    return stats
+
+
+def process_bronze_to_silver(
+    bronze_path: str,
+    silver_path: str,
+    chunk_size: int = 512,
+    chunk_overlap: int = 50
+) -> dict:
+    """
+    Process Bronze layer to Silver layer.
+
+    Args:
+        bronze_path: Bronze layer path
+        silver_path: Silver layer output path
+        chunk_size: Target chunk size in tokens
+        chunk_overlap: Overlap between chunks
+
+    Returns:
+        Processing statistics
+    """
+    logger.info(f"Processing Bronze → Silver: {bronze_path} → {silver_path}")
+
+    # Initialize processor
+    processor = SilverLayerProcessor(
+        bronze_path=bronze_path,
+        silver_path=silver_path,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
+
+    # Progress callback
+    def progress(count, message):
+        logger.info(f"Progress: {message}")
+
+    # Process
+    stats = processor.process_bronze_layer(progress_callback=progress)
+
+    logger.info(f"Silver layer processing complete: {stats}")
+    return stats
+
+
+def evaluate_anonymization(
+    silver_path: str,
+    ground_truth_path: str
+) -> dict:
+    """
+    Evaluate anonymization accuracy against ground truth.
+
+    Args:
+        silver_path: Silver layer path with processed chunks
+        ground_truth_path: Path to ground truth JSON
+
+    Returns:
+        Evaluation results
+    """
+    logger.info(f"Evaluating anonymization accuracy")
+
+    # Load ground truth
+    ground_truth = GroundTruthLoader.load_from_json(ground_truth_path)
+
+    # Create detector wrapper for evaluation
+    from anonymization.pii_detector import PIIDetector
+
+    class DetectorWrapper:
+        def __init__(self):
+            self.detector = PIIDetector()
+
+        def detect(self, text):
+            from conflict_handling.models import PIIAnnotation as EvalPIIAnnotation
+            from conflict_handling.models import PIIType as EvalPIIType
+
+            entities = self.detector.detect(text)
+
+            # Convert to evaluation format
+            return [
+                EvalPIIAnnotation(
+                    text=e.text,
+                    pii_type=EvalPIIType(e.pii_type.value),
+                    start_char=e.start,
+                    end_char=e.end,
+                    confidence=e.confidence,
+                    is_sensitive=True
+                )
+                for e in entities
+            ]
+
+    # Evaluate
+    evaluator = PIIEvaluator()
+    detector = DetectorWrapper()
+    result = evaluator.evaluate(ground_truth, detector)
+
+    # Print report
+    print(result.to_report())
+
+    # Save results
+    eval_output = Path(silver_path) / "metadata" / "pii_evaluation.json"
+    eval_data = {
+        "timestamp": datetime.now().isoformat(),
+        "ground_truth_path": ground_truth_path,
+        "total_ground_truth": result.total_ground_truth,
+        "total_detected": result.total_detected,
+        "precision": result.precision,
+        "recall": result.recall,
+        "f1_score": result.f1_score,
+        "metrics_by_type": result.metrics_by_type,
+    }
+
+    with open(eval_output, "w") as f:
+        json.dump(eval_data, f, indent=2)
+
+    logger.info(f"Evaluation results saved to: {eval_output}")
+
+    return eval_data
+
+
+def run_full_pipeline(
+    pst_path: Optional[str] = None,
+    docs_path: Optional[str] = None,
+    output_path: str = "./data",
+    ground_truth_path: Optional[str] = None,
+    chunk_size: int = 512
+) -> dict:
+    """
+    Run the full ingestion and anonymization pipeline.
+
+    Args:
+        pst_path: Path to PST file (optional)
+        docs_path: Path to documents directory (optional)
+        output_path: Output directory
+        ground_truth_path: Path to ground truth for evaluation (optional)
+        chunk_size: Chunk size in tokens
+
+    Returns:
+        Combined statistics
+    """
+    bronze_path = f"{output_path}/bronze"
+    silver_path = f"{output_path}/silver"
+
+    all_stats = {
+        "start_time": datetime.now().isoformat(),
+        "bronze_stats": {},
+        "silver_stats": {},
+        "evaluation_stats": {},
+    }
+
+    # Step 1: Extract PST to Bronze
+    if pst_path:
+        logger.info("=" * 60)
+        logger.info("STEP 1: PST Extraction → Bronze Layer")
+        logger.info("=" * 60)
+        pst_stats = extract_pst_to_bronze(pst_path, bronze_path)
+        all_stats["bronze_stats"]["pst"] = pst_stats
+
+    # Step 2: Parse documents to Bronze
+    if docs_path:
+        logger.info("=" * 60)
+        logger.info("STEP 2: Document Parsing → Bronze Layer")
+        logger.info("=" * 60)
+        doc_stats = parse_documents_to_bronze(docs_path, bronze_path)
+        all_stats["bronze_stats"]["documents"] = doc_stats
+
+    # Step 3: Process Bronze to Silver
+    logger.info("=" * 60)
+    logger.info("STEP 3: Bronze → Silver Layer (Chunking + Anonymization)")
+    logger.info("=" * 60)
+    silver_stats = process_bronze_to_silver(
+        bronze_path, silver_path, chunk_size=chunk_size
+    )
+    all_stats["silver_stats"] = silver_stats
+
+    # Step 4: Evaluate anonymization (if ground truth provided)
+    if ground_truth_path:
+        logger.info("=" * 60)
+        logger.info("STEP 4: Anonymization Evaluation")
+        logger.info("=" * 60)
+        eval_stats = evaluate_anonymization(silver_path, ground_truth_path)
+        all_stats["evaluation_stats"] = eval_stats
+
+    all_stats["end_time"] = datetime.now().isoformat()
+
+    # Save combined stats
+    stats_file = f"{output_path}/pipeline_stats.json"
+    with open(stats_file, "w") as f:
+        json.dump(all_stats, f, indent=2, default=str)
+
+    logger.info("=" * 60)
+    logger.info("PIPELINE COMPLETE")
+    logger.info("=" * 60)
+    logger.info(f"Stats saved to: {stats_file}")
+
+    return all_stats
+
+
+def main():
+    """Main entry point"""
+    parser = argparse.ArgumentParser(
+        description="Ingestion and Anonymization Pipeline",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Process PST file
+  python run_ingestion.py --pst emails.pst --output ./data
+
+  # Process documents
+  python run_ingestion.py --documents ./docs --output ./data
+
+  # Process both
+  python run_ingestion.py --pst emails.pst --documents ./docs --output ./data
+
+  # Process Bronze to Silver only
+  python run_ingestion.py --bronze ./data/bronze --silver ./data/silver
+
+  # With evaluation
+  python run_ingestion.py --bronze ./data/bronze --silver ./data/silver --evaluate ground_truth.json
+        """
+    )
+
+    # Input options
+    parser.add_argument(
+        "--pst",
+        type=str,
+        help="Path to PST file for email extraction"
+    )
+    parser.add_argument(
+        "--documents", "--docs",
+        type=str,
+        help="Path to documents directory"
+    )
+    parser.add_argument(
+        "--bronze",
+        type=str,
+        help="Path to existing Bronze layer (skip extraction)"
+    )
+
+    # Output options
+    parser.add_argument(
+        "--output", "-o",
+        type=str,
+        default="./data",
+        help="Output directory (default: ./data)"
+    )
+    parser.add_argument(
+        "--silver",
+        type=str,
+        help="Silver layer output path (default: {output}/silver)"
+    )
+
+    # Processing options
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=512,
+        help="Chunk size in tokens (default: 512)"
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=50,
+        help="Chunk overlap in tokens (default: 50)"
+    )
+
+    # Evaluation
+    parser.add_argument(
+        "--evaluate",
+        type=str,
+        help="Path to ground truth JSON for evaluation"
+    )
+
+    # Other options
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Verbose logging"
+    )
+
+    args = parser.parse_args()
+
+    # Set logging level
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    # Validate inputs
+    if not any([args.pst, args.documents, args.bronze]):
+        parser.error("Must specify at least one of: --pst, --documents, or --bronze")
+
+    # Determine paths
+    bronze_path = args.bronze or f"{args.output}/bronze"
+    silver_path = args.silver or f"{args.output}/silver"
+
+    # Create output directory
+    Path(args.output).mkdir(parents=True, exist_ok=True)
+
+    # Run pipeline
+    try:
+        if args.bronze:
+            # Bronze already exists, just process to Silver
+            stats = process_bronze_to_silver(
+                bronze_path=bronze_path,
+                silver_path=silver_path,
+                chunk_size=args.chunk_size,
+                chunk_overlap=args.chunk_overlap
+            )
+
+            if args.evaluate:
+                evaluate_anonymization(silver_path, args.evaluate)
+
+        else:
+            # Full pipeline
+            stats = run_full_pipeline(
+                pst_path=args.pst,
+                docs_path=args.documents,
+                output_path=args.output,
+                ground_truth_path=args.evaluate,
+                chunk_size=args.chunk_size
+            )
+
+        print("\n" + "=" * 60)
+        print("SUCCESS! Pipeline completed.")
+        print("=" * 60)
+        print(f"\nBronze layer: {bronze_path}")
+        print(f"Silver layer: {silver_path}")
+
+        if "silver_stats" in stats:
+            print(f"\nChunks created: {stats.get('silver_stats', {}).get('chunks_created', 'N/A')}")
+            print(f"PII detected: {stats.get('silver_stats', {}).get('pii_detected', 'N/A')}")
+
+    except Exception as e:
+        logger.error(f"Pipeline failed: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

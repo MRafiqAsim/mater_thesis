@@ -1,0 +1,561 @@
+{
+  "created_at": "2025-01-15T10:00:00",
+  "description": "Sample ground truth for PII anonymization evaluation",
+  "annotation_guidelines": "All PII that could identify a real person should be marked as is_sensitive=true",
+  "document_count": 10,
+  "documents": [
+    {
+      "doc_id": "email_001",
+      "text": "Hi John,\n\nPlease contact Sarah Johnson at sarah.johnson@techcorp.com or call her at +32 123 456 789 regarding the Q3 budget review.\n\nBest regards,\nMichael Brown\nSenior Manager",
+      "language": "en",
+      "source_file": "inbox/2024/email_001.msg",
+      "annotations": [
+        {
+          "text": "John",
+          "type": "PERSON",
+          "start": 3,
+          "end": 7,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Sarah Johnson",
+          "type": "PERSON",
+          "start": 24,
+          "end": 37,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "sarah.johnson@techcorp.com",
+          "type": "EMAIL",
+          "start": 41,
+          "end": 67,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "+32 123 456 789",
+          "type": "PHONE",
+          "start": 87,
+          "end": 102,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Michael Brown",
+          "type": "PERSON",
+          "start": 148,
+          "end": 161,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "email_002",
+      "text": "Dear Mr. Van der Berg,\n\nYour order #12345 has been shipped to Kerkstraat 42, 3000 Leuven, Belgium. For questions, email support@webshop.be or call 016 12 34 56.\n\nKind regards,\nEmma de Vries\nCustomer Service",
+      "language": "en",
+      "source_file": "inbox/2024/email_002.msg",
+      "annotations": [
+        {
+          "text": "Van der Berg",
+          "type": "PERSON",
+          "start": 9,
+          "end": 21,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Kerkstraat 42, 3000 Leuven, Belgium",
+          "type": "ADDRESS",
+          "start": 62,
+          "end": 97,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "support@webshop.be",
+          "type": "EMAIL",
+          "start": 118,
+          "end": 136,
+          "confidence": 1.0,
+          "is_sensitive": false,
+          "note": "Generic support email, not personal PII"
+        },
+        {
+          "text": "016 12 34 56",
+          "type": "PHONE",
+          "start": 145,
+          "end": 157,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Emma de Vries",
+          "type": "PERSON",
+          "start": 175,
+          "end": 188,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "email_003_dutch",
+      "text": "Beste Jan,\n\nHierbij stuur ik je de factuur voor het project. Mijn IBAN is BE68 5390 0754 7034 voor de betaling. Je kunt me bereiken op jan.pieters@bedrijf.nl of bel 0612345678.\n\nMet vriendelijke groet,\nPieter Janssen",
+      "language": "nl",
+      "source_file": "inbox/2024/email_003.msg",
+      "annotations": [
+        {
+          "text": "Jan",
+          "type": "PERSON",
+          "start": 6,
+          "end": 9,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "BE68 5390 0754 7034",
+          "type": "IBAN",
+          "start": 66,
+          "end": 85,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "jan.pieters@bedrijf.nl",
+          "type": "EMAIL",
+          "start": 120,
+          "end": 142,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "0612345678",
+          "type": "PHONE",
+          "start": 150,
+          "end": 160,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Pieter Janssen",
+          "type": "PERSON",
+          "start": 186,
+          "end": 200,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "email_004",
+      "text": "Meeting notes from the Azure OpenAI project review:\n\nAttendees: David Chen, Lisa Wang, Robert Smith\nDate: January 15, 2025\nLocation: Microsoft Building 42, Redmond\n\nAction items assigned to d.chen@microsoft.com and l.wang@microsoft.com.",
+      "language": "en",
+      "source_file": "inbox/2024/email_004.msg",
+      "annotations": [
+        {
+          "text": "David Chen",
+          "type": "PERSON",
+          "start": 63,
+          "end": 73,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Lisa Wang",
+          "type": "PERSON",
+          "start": 75,
+          "end": 84,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Robert Smith",
+          "type": "PERSON",
+          "start": 86,
+          "end": 98,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Microsoft",
+          "type": "ORGANIZATION",
+          "start": 133,
+          "end": 142,
+          "confidence": 1.0,
+          "is_sensitive": false,
+          "note": "Organization name, not personal PII"
+        },
+        {
+          "text": "d.chen@microsoft.com",
+          "type": "EMAIL",
+          "start": 188,
+          "end": 208,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "l.wang@microsoft.com",
+          "type": "EMAIL",
+          "start": 213,
+          "end": 233,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "email_005",
+      "text": "CONFIDENTIAL - Employee Record\n\nName: Alexander Thompson\nEmployee ID: EMP-2024-0042\nSSN: 123-45-6789\nDate of Birth: March 15, 1985\nAddress: 1234 Oak Street, Apt 5B, New York, NY 10001\nPhone: (555) 123-4567\nEmail: a.thompson@company.com",
+      "language": "en",
+      "source_file": "hr/employee_005.txt",
+      "annotations": [
+        {
+          "text": "Alexander Thompson",
+          "type": "PERSON",
+          "start": 38,
+          "end": 56,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "EMP-2024-0042",
+          "type": "ID_NUMBER",
+          "start": 71,
+          "end": 84,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "123-45-6789",
+          "type": "SSN",
+          "start": 90,
+          "end": 101,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "March 15, 1985",
+          "type": "DATE_OF_BIRTH",
+          "start": 117,
+          "end": 131,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "1234 Oak Street, Apt 5B, New York, NY 10001",
+          "type": "ADDRESS",
+          "start": 141,
+          "end": 184,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "(555) 123-4567",
+          "type": "PHONE",
+          "start": 192,
+          "end": 206,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "a.thompson@company.com",
+          "type": "EMAIL",
+          "start": 214,
+          "end": 236,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "email_006_dutch",
+      "text": "Geachte mevrouw De Jong,\n\nUw BSN-nummer 123456789 is geregistreerd in ons systeem. Uw creditcardnummer eindigend op 4242 is bevestigd.\n\nNeem contact op via info@ziekenhuis.nl of bel de receptie op 020-555-1234.\n\nDr. Willem van Dijk\nHoofd Patiëntenzorg",
+      "language": "nl",
+      "source_file": "inbox/2024/email_006.msg",
+      "annotations": [
+        {
+          "text": "De Jong",
+          "type": "PERSON",
+          "start": 17,
+          "end": 24,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "123456789",
+          "type": "BSN",
+          "start": 40,
+          "end": 49,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "info@ziekenhuis.nl",
+          "type": "EMAIL",
+          "start": 157,
+          "end": 175,
+          "confidence": 1.0,
+          "is_sensitive": false,
+          "note": "Generic info email"
+        },
+        {
+          "text": "020-555-1234",
+          "type": "PHONE",
+          "start": 196,
+          "end": 208,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Willem van Dijk",
+          "type": "PERSON",
+          "start": 215,
+          "end": 230,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "email_007",
+      "text": "From: John Deere Equipment <sales@johndeere.com>\nTo: Farm Operations\n\nDear Valued Customer,\n\nYour tractor order has been processed. Contact your local dealer James Wilson at j.wilson@dealer.com or visit our website.\n\nJohn Deere - Nothing Runs Like a Deere",
+      "language": "en",
+      "source_file": "inbox/2024/email_007.msg",
+      "annotations": [
+        {
+          "text": "John Deere",
+          "type": "ORGANIZATION",
+          "start": 6,
+          "end": 16,
+          "confidence": 1.0,
+          "is_sensitive": false,
+          "note": "Company name, not a person - should NOT be anonymized"
+        },
+        {
+          "text": "sales@johndeere.com",
+          "type": "EMAIL",
+          "start": 28,
+          "end": 47,
+          "confidence": 1.0,
+          "is_sensitive": false,
+          "note": "Company sales email"
+        },
+        {
+          "text": "James Wilson",
+          "type": "PERSON",
+          "start": 145,
+          "end": 157,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "j.wilson@dealer.com",
+          "type": "EMAIL",
+          "start": 161,
+          "end": 180,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "email_008",
+      "text": "IT Security Alert\n\nSuspicious login detected from IP address 192.168.1.105 for user account maria.garcia@corp.com. The login originated from https://suspicious-site.com/login.\n\nPlease verify with Maria Garcia directly.",
+      "language": "en",
+      "source_file": "inbox/2024/email_008.msg",
+      "annotations": [
+        {
+          "text": "192.168.1.105",
+          "type": "IP_ADDRESS",
+          "start": 61,
+          "end": 74,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "maria.garcia@corp.com",
+          "type": "EMAIL",
+          "start": 92,
+          "end": 113,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "https://suspicious-site.com/login",
+          "type": "URL",
+          "start": 140,
+          "end": 173,
+          "confidence": 1.0,
+          "is_sensitive": false,
+          "note": "URL is not PII"
+        },
+        {
+          "text": "Maria Garcia",
+          "type": "PERSON",
+          "start": 196,
+          "end": 208,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "doc_009",
+      "text": "Contract Agreement\n\nThis agreement is made between TechCorp Inc. (\"Company\") and Dr. Jennifer Lee (\"Consultant\").\n\nConsultant Details:\n- Full Name: Dr. Jennifer Anne Lee\n- Contact: jennifer.lee@consultant.org\n- Phone: +1 (650) 555-0199\n- Address: 500 Innovation Drive, Suite 300, Palo Alto, CA 94301",
+      "language": "en",
+      "source_file": "contracts/contract_009.pdf",
+      "annotations": [
+        {
+          "text": "TechCorp Inc.",
+          "type": "ORGANIZATION",
+          "start": 51,
+          "end": 64,
+          "confidence": 1.0,
+          "is_sensitive": false,
+          "note": "Company name"
+        },
+        {
+          "text": "Dr. Jennifer Lee",
+          "type": "PERSON",
+          "start": 82,
+          "end": 98,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Dr. Jennifer Anne Lee",
+          "type": "PERSON",
+          "start": 150,
+          "end": 171,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "jennifer.lee@consultant.org",
+          "type": "EMAIL",
+          "start": 183,
+          "end": 210,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "+1 (650) 555-0199",
+          "type": "PHONE",
+          "start": 220,
+          "end": 237,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "500 Innovation Drive, Suite 300, Palo Alto, CA 94301",
+          "type": "ADDRESS",
+          "start": 249,
+          "end": 301,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    },
+    {
+      "doc_id": "email_010_mixed",
+      "text": "Team Update\n\nHi everyone,\n\nPlease welcome our new colleagues:\n- Thomas Müller from Germany (t.muller@company.de)\n- Sophie Dubois from France (s.dubois@company.fr)\n- Kenji Tanaka from Japan (k.tanaka@company.jp)\n\nCC: HR Team <hr@company.com>\n\nBest,\nAnna Kowalski\nTeam Lead",
+      "language": "en",
+      "source_file": "inbox/2024/email_010.msg",
+      "annotations": [
+        {
+          "text": "Thomas Müller",
+          "type": "PERSON",
+          "start": 63,
+          "end": 76,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "t.muller@company.de",
+          "type": "EMAIL",
+          "start": 92,
+          "end": 111,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Sophie Dubois",
+          "type": "PERSON",
+          "start": 115,
+          "end": 128,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "s.dubois@company.fr",
+          "type": "EMAIL",
+          "start": 143,
+          "end": 162,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "Kenji Tanaka",
+          "type": "PERSON",
+          "start": 166,
+          "end": 178,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "k.tanaka@company.jp",
+          "type": "EMAIL",
+          "start": 192,
+          "end": 211,
+          "confidence": 1.0,
+          "is_sensitive": true
+        },
+        {
+          "text": "hr@company.com",
+          "type": "EMAIL",
+          "start": 227,
+          "end": 241,
+          "confidence": 1.0,
+          "is_sensitive": false,
+          "note": "Generic HR email"
+        },
+        {
+          "text": "Anna Kowalski",
+          "type": "PERSON",
+          "start": 251,
+          "end": 264,
+          "confidence": 1.0,
+          "is_sensitive": true
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "total_documents": 10,
+    "total_annotations": 52,
+    "sensitive_annotations": 44,
+    "non_sensitive_annotations": 8,
+    "by_type": {
+      "PERSON": 20,
+      "EMAIL": 16,
+      "PHONE": 7,
+      "ADDRESS": 3,
+      "IBAN": 1,
+      "BSN": 1,
+      "SSN": 1,
+      "IP_ADDRESS": 1,
+      "DATE_OF_BIRTH": 1,
+      "ID_NUMBER": 1,
+      "ORGANIZATION": 3,
+      "URL": 1
+    },
+    "by_language": {
+      "en": 7,
+      "nl": 2,
+      "mixed": 1
+    }
+  }
+}
