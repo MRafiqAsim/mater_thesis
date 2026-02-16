@@ -1,0 +1,60 @@
+{
+  "_description": "Bronze Layer Email Record Template - Raw, Immutable, NO AI Processing",
+  "_purpose": "Documentation of Bronze layer structure for email records extracted from PST/MSG files",
+  "_rules": [
+    "Append-only: Records are never modified after creation",
+    "No AI: No transformation, summarization, or enrichment",
+    "Raw extraction: Preserve original content exactly as found",
+    "Lineage: Every record traces to source file"
+  ],
+
+  "record_id": "bronze_{pst_hash}_{email_hash}",
+  "source_file": "original_filename.pst",
+  "file_type": ".pst",
+  "ingestion_time": "ISO-8601 timestamp of when record was created",
+  "file_size": 12345,
+  "file_hash": "hash for deduplication within PST",
+
+  "raw_content": "For non-email documents (PDF, DOCX, etc.) - raw text content",
+  "raw_binary_path": "Path to binary file if stored separately (images, PDFs)",
+
+  "email_headers": {
+    "_description": "Raw email headers for threading and deduplication",
+    "folder": "PST folder path where email was found",
+    "message_id": "<unique-message-id@domain.com>",
+    "in_reply_to": "<parent-message-id@domain.com> or null if root email",
+    "references": "<space-separated list of ancestor message IDs>"
+  },
+
+  "email_body_text": "Plain text body of the email - extracted as-is",
+  "email_body_html": "HTML body of the email - preserved for OCR if needed",
+
+  "email_attachments": [
+    {
+      "_description": "List of attachments extracted from email",
+      "attachment_id": "bronze_{pst_hash}_{email_hash}_att_0",
+      "filename": "document.pdf",
+      "content_type": "application/pdf",
+      "size": 54321,
+      "path": "data/simplerag/bronze/attachments/bronze_xxx_att_0.pdf"
+    }
+  ],
+
+  "email_thread_id": "Thread grouping ID if available from email client",
+
+  "document_metadata": {
+    "_description": "Metadata extracted from email headers - raw, not parsed",
+    "subject": "Email subject line",
+    "sender_name": "\"Display Name\" <email@domain.com> - raw format",
+    "sender_email": "email@domain.com - extracted email only",
+    "recipients": "recipient1@domain.com, recipient2@domain.com - comma separated",
+    "sent_time": "2013-12-18 10:03:48+05:00 - original timestamp"
+  },
+
+  "_notes": {
+    "deduplication": "Same email appearing in multiple PSTs detected via message_id",
+    "threading": "in_reply_to and references enable conversation reconstruction",
+    "attachments": "Only useful documents stored (PDFs, Office docs), not inline images/icons",
+    "silver_processing": "Silver layer parses participants, cleans content, adds AI enrichment"
+  }
+}

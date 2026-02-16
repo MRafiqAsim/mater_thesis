@@ -1,0 +1,88 @@
+{
+  "record_id": "silver_xxx",
+  "email_id": "bronze_xxx",
+  "thread_id": "thread_xxx",
+
+  "metadata": {
+    "subject": "string",
+    "timestamp": "ISO-8601",
+    "language": "en",
+    "source_type": "pst",
+    "processing_time": "ISO-8601"
+  },
+
+  "participants": {
+    "from": {
+      "email": "sender@domain.com",
+      "name": "Sender Name",
+      "domain": "domain.com"
+    },
+    "to": [
+      {
+        "email": "recipient@domain.com",
+        "name": "Recipient Name",
+        "domain": "domain.com"
+      }
+    ],
+    "cc": [],
+    "bcc": []
+  },
+
+  "content": {
+    "raw_text": "Original email body text",
+    "clean_text": "Anonymized, disclaimer-removed text",
+    "summary": "AI-generated 2-3 sentence summary",
+    "word_count": 123,
+    "has_attachments": true,
+    "attachment_count": 2
+  },
+
+  "anonymization": {
+    "pii_mappings": {
+      "[PERSON_1]": "John Doe",
+      "[EMAIL_1]": "john.doe@company.com",
+      "[ORG_1]": "Company Name"
+    },
+    "version": "v1.0"
+  },
+
+  "threading": {
+    "message_id": "<unique-message-id@domain>",
+    "in_reply_to": "<parent-message-id@domain>",
+    "references": [
+      "<root-message@domain>",
+      "<parent-message@domain>"
+    ],
+    "is_reply": true,
+    "thread_position": 3
+  },
+
+  "quality": {
+    "disclaimer_removed": true,
+    "signature_removed": true,
+    "ocr_performed": false,
+    "cleaning_version": "v1.0"
+  },
+
+  "chunks": [
+    {
+      "chunk_id": "bronze_xxx_chunk_0",
+      "text": "First chunk of text for RAG retrieval...",
+      "word_count": 100
+    },
+    {
+      "chunk_id": "bronze_xxx_chunk_1",
+      "text": "Second chunk with overlap...",
+      "word_count": 95
+    }
+  ],
+
+  "lineage": {
+    "bronze_ref": "bronze_xxx",
+    "source_file": "emails.pst",
+    "attachment_refs": [
+      "bronze_xxx_att_0",
+      "bronze_xxx_att_1"
+    ]
+  }
+}
