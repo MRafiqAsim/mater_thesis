@@ -54,6 +54,9 @@ class IndexedChunk:
     message_id: str = ""
     is_reply: bool = False
 
+    # Summary for embedding-based search (actual text used for LLM context)
+    summary: str = ""
+
 
 @dataclass
 class RetrievedChunk:
@@ -230,6 +233,8 @@ class GoldRAGRetriever:
         skipped = 0
 
         for record in silver_records:
+            summary = record.content.summary or ""
+
             for chunk in record.chunks:
                 chunk_id = chunk.chunk_id
 
@@ -253,11 +258,13 @@ class GoldRAGRetriever:
                     thread_id=record.thread_id,
                     message_id=record.threading.message_id,
                     is_reply=record.threading.is_reply,
+                    summary=summary,
                 )
 
                 self.chunks[chunk_id] = indexed_chunk
                 new_chunks.append(chunk_id)
-                new_texts.append(chunk.text)
+                # Embed summary for search; fall back to chunk text if no summary
+                new_texts.append(summary if summary else chunk.text)
 
         if skipped > 0:
             logger.info(f"Skipped {skipped} already indexed chunks")

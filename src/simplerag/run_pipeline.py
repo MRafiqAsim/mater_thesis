@@ -10,8 +10,13 @@ Usage:
 
     # Run individual layers
     python -m src.simplerag.run_pipeline --bronze  # Ingest new files
-    python -m src.simplerag.run_pipeline --silver  # Process Bronze → Silver
+    python -m src.simplerag.run_pipeline --silver  # All 3 Silver stages
     python -m src.simplerag.run_pipeline --gold    # Index Silver → Gold
+
+    # Run individual Silver stages
+    python -m src.simplerag.run_pipeline --silver-chunks      # Stage 1: Extract & chunk
+    python -m src.simplerag.run_pipeline --silver-anonymize   # Stage 2: Anonymize
+    python -m src.simplerag.run_pipeline --silver-summarize   # Stage 3: Summarize
 
     # Query
     python -m src.simplerag.run_pipeline --query "What is X?"
@@ -104,12 +109,10 @@ class SimpleRAGPipeline:
 
     async def run_silver(self) -> dict:
         """
-        Run Silver layer: Process Bronze → Silver.
-
-        Includes OCR, anonymization, summarization.
+        Run Silver layer: all 3 stages (chunks → anonymize → summarize).
         """
         logger.info("=" * 60)
-        logger.info("SILVER LAYER: OCR, Anonymization, Summarization")
+        logger.info("SILVER LAYER: Chunks, Anonymization, Summarization")
         logger.info("=" * 60)
 
         start = datetime.now()
@@ -125,6 +128,67 @@ class SimpleRAGPipeline:
         }
 
         logger.info(f"Silver complete: {len(records)} records, {result['total_chunks']} chunks in {duration:.2f}s")
+        return result
+
+    async def run_silver_chunks(self) -> dict:
+        """Stage 1: Bronze → silver/chunks/ (clean text, no anonymization)."""
+        logger.info("=" * 60)
+        logger.info("SILVER STAGE 1: Chunking (no anonymization)")
+        logger.info("=" * 60)
+
+        start = datetime.now()
+        chunked_ids = await self.silver.run_all_chunking()
+        duration = (datetime.now() - start).total_seconds()
+
+        result = {
+            "layer": "silver",
+            "stage": "chunks",
+            "records_chunked": len(chunked_ids),
+            "duration_seconds": duration,
+        }
+
+        logger.info(f"Stage 1 complete: {len(chunked_ids)} records in {duration:.2f}s")
+        return result
+
+    async def run_silver_anonymize(self) -> dict:
+        """Stage 2: silver/chunks/ → silver/chunks_anonymized/."""
+        logger.info("=" * 60)
+        logger.info("SILVER STAGE 2: Anonymization")
+        logger.info("=" * 60)
+
+        start = datetime.now()
+        anonymized_ids = await self.silver.run_all_anonymization()
+        duration = (datetime.now() - start).total_seconds()
+
+        result = {
+            "layer": "silver",
+            "stage": "anonymized",
+            "records_anonymized": len(anonymized_ids),
+            "duration_seconds": duration,
+        }
+
+        logger.info(f"Stage 2 complete: {len(anonymized_ids)} records in {duration:.2f}s")
+        return result
+
+    async def run_silver_summarize(self) -> dict:
+        """Stage 3: silver/chunks_anonymized/ → silver/chunks_summarized/."""
+        logger.info("=" * 60)
+        logger.info("SILVER STAGE 3: Summarization")
+        logger.info("=" * 60)
+
+        start = datetime.now()
+        records = await self.silver.run_all_summarization()
+        duration = (datetime.now() - start).total_seconds()
+
+        result = {
+            "layer": "silver",
+            "stage": "summarized",
+            "records_summarized": len(records),
+            "duration_seconds": duration,
+            "total_chunks": sum(len(r.chunks) for r in records)
+        }
+
+        logger.info(f"Stage 3 complete: {len(records)} records in {duration:.2f}s")
         return result
 
     async def run_gold(self) -> dict:
@@ -256,7 +320,10 @@ async def main():
     parser.add_argument("--base-dir", default="./data/simplerag", help="Base directory")
     parser.add_argument("--all", action="store_true", help="Run full pipeline")
     parser.add_argument("--bronze", action="store_true", help="Run Bronze layer only")
-    parser.add_argument("--silver", action="store_true", help="Run Silver layer only")
+    parser.add_argument("--silver", action="store_true", help="Run all Silver stages (chunks → anonymize → summarize)")
+    parser.add_argument("--silver-chunks", action="store_true", help="Silver Stage 1: Extract & chunk (no anonymization)")
+    parser.add_argument("--silver-anonymize", action="store_true", help="Silver Stage 2: Anonymize chunks")
+    parser.add_argument("--silver-summarize", action="store_true", help="Silver Stage 3: Summarize anonymized chunks")
     parser.add_argument("--gold", action="store_true", help="Run Gold layer only")
     parser.add_argument("--query", "-q", type=str, help="Query to run")
     parser.add_argument("--interactive", "-i", action="store_true", help="Interactive mode")
@@ -276,6 +343,18 @@ async def main():
 
         elif args.silver:
             results = await pipeline.run_silver()
+            print(f"\nResults: {json.dumps(results, indent=2)}")
+
+        elif args.silver_chunks:
+            results = await pipeline.run_silver_chunks()
+            print(f"\nResults: {json.dumps(results, indent=2)}")
+
+        elif args.silver_anonymize:
+            results = await pipeline.run_silver_anonymize()
+            print(f"\nResults: {json.dumps(results, indent=2)}")
+
+        elif args.silver_summarize:
+            results = await pipeline.run_silver_summarize()
             print(f"\nResults: {json.dumps(results, indent=2)}")
 
         elif args.gold:

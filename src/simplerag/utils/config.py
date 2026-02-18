@@ -58,6 +58,11 @@ class DirectoryConfig:
     silver_dir: Path = field(default=None)
     gold_dir: Path = field(default=None)
 
+    # Silver staged sub-directories
+    silver_chunks_dir: Path = field(default=None)
+    silver_anonymized_dir: Path = field(default=None)
+    silver_summarized_dir: Path = field(default=None)
+
     def __post_init__(self):
         """Initialize paths relative to base_dir."""
         if self.source_folder is None:
@@ -74,6 +79,13 @@ class DirectoryConfig:
             self.silver_dir = self.base_dir / "silver"
         if self.gold_dir is None:
             self.gold_dir = self.base_dir / "gold"
+        # Silver staged directories
+        if self.silver_chunks_dir is None:
+            self.silver_chunks_dir = self.silver_dir / "chunks"
+        if self.silver_anonymized_dir is None:
+            self.silver_anonymized_dir = self.silver_dir / "chunks_anonymized"
+        if self.silver_summarized_dir is None:
+            self.silver_summarized_dir = self.silver_dir / "chunks_summarized"
 
     def ensure_directories(self):
         """Create all required directories."""
@@ -88,7 +100,9 @@ class DirectoryConfig:
             self.bronze_dir / "attachments",
             self.bronze_dir / "metadata",
             self.silver_dir,
-            self.silver_dir / "processed",
+            self.silver_chunks_dir,
+            self.silver_anonymized_dir,
+            self.silver_summarized_dir,
             self.silver_dir / "ocr",
             self.gold_dir,
             self.gold_dir / "embeddings",
