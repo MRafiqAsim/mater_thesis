@@ -250,7 +250,6 @@ class ThreadAwareProcessor:
                 self.attachment_processor = AttachmentProcessor(
                     bronze_path=str(self.bronze_path),
                     extract_tables=True,
-                    cache_extracted=True
                 )
                 logger.info(f"AttachmentProcessor initialized")
             except Exception as e:

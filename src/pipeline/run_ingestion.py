@@ -10,10 +10,11 @@ Usage:
     python run_ingestion.py --bronze /path/to/bronze --silver /path/to/silver
 
 Steps:
-    1. Extract emails from PST files → Bronze layer
-    2. Parse documents (PDF, DOCX, etc.) → Bronze layer
-    3. Chunk, detect PII, anonymize → Silver layer
-    4. Evaluate anonymization accuracy (if ground truth provided)
+    1.   Extract emails from PST files → Bronze layer
+    1.5  Classify attachments (extract, classify, move, enrich email JSON)
+    2.   Parse documents (PDF, DOCX, etc.) → Bronze layer
+    3.   Chunk, detect PII, anonymize → Silver layer
+    4.   Evaluate anonymization accuracy (if ground truth provided)
 """
 
 import argparse
@@ -30,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from ingestion.pst_extractor import PSTExtractor
 from ingestion.document_parser import DocumentParser
 from ingestion.bronze_loader import BronzeLayerLoader
+from ingestion.attachment_processor import AttachmentProcessor
 from anonymization.silver_processor import SilverLayerProcessor
 from conflict_handling.pii_evaluation import PIIEvaluator, GroundTruthLoader
 
@@ -85,6 +87,56 @@ def extract_pst_to_bronze(
     except Exception as e:
         logger.error(f"PST extraction failed: {e}")
         raise
+
+
+def classify_bronze_attachments(bronze_path: str) -> dict:
+    """
+    Classify all attachments in the Bronze layer.
+
+    Extracts text, classifies (knowledge/transactional/other), moves files
+    into classified subdirectories, writes co-located metadata JSON, and
+    enriches the parent email JSON with classification fields.
+
+    Args:
+        bronze_path: Bronze layer path
+
+    Returns:
+        Classification statistics
+    """
+    logger.info(f"Classifying Bronze attachments: {bronze_path}")
+
+    processor = AttachmentProcessor(bronze_path=bronze_path)
+
+    def progress(count, message):
+        logger.info(f"Progress: {message}")
+
+    stats = processor.process_all_attachments(progress_callback=progress)
+
+    logger.info(f"Attachment classification complete: {stats}")
+    return stats
+
+
+def cleanup_bronze_attachments(bronze_path: str) -> dict:
+    """
+    Remove legacy duplicate storage from Bronze attachments.
+
+    Removes 32-char email_id directories (BronzeLayerLoader duplicates),
+    migrates old attachments_cache/ to co-located metadata, and removes
+    empty directories.
+
+    Args:
+        bronze_path: Bronze layer path
+
+    Returns:
+        Cleanup statistics
+    """
+    logger.info(f"Cleaning up legacy attachment storage: {bronze_path}")
+
+    processor = AttachmentProcessor(bronze_path=bronze_path)
+    stats = processor.cleanup_legacy_storage()
+
+    logger.info(f"Attachment cleanup complete: {stats}")
+    return stats
 
 
 def parse_documents_to_bronze(
@@ -289,6 +341,13 @@ def run_full_pipeline(
         pst_stats = extract_pst_to_bronze(pst_path, bronze_path)
         all_stats["bronze_stats"]["pst"] = pst_stats
 
+        # Step 1.5: Classify all attachments (extract text, classify, move, enrich)
+        logger.info("=" * 60)
+        logger.info("STEP 1.5: Attachment Classification → Bronze Layer")
+        logger.info("=" * 60)
+        att_stats = classify_bronze_attachments(bronze_path)
+        all_stats["bronze_stats"]["attachment_classification"] = att_stats
+
     # Step 2: Parse documents to Bronze
     if docs_path:
         logger.info("=" * 60)
@@ -350,6 +409,12 @@ Examples:
 
   # With evaluation
   python run_ingestion.py --bronze ./data/bronze --silver ./data/silver --evaluate ground_truth.json
+
+  # Classify attachments on existing Bronze (re-classification)
+  python run_ingestion.py --bronze ./data/bronze --classify-attachments
+
+  # Clean up legacy duplicate storage
+  python run_ingestion.py --bronze ./data/bronze --cleanup-attachments
         """
     )
 
@@ -404,6 +469,18 @@ Examples:
         help="Path to ground truth JSON for evaluation"
     )
 
+    # Attachment management
+    parser.add_argument(
+        "--classify-attachments",
+        action="store_true",
+        help="Classify all Bronze attachments (extract, classify, move, enrich)"
+    )
+    parser.add_argument(
+        "--cleanup-attachments",
+        action="store_true",
+        help="Remove legacy duplicate storage (32-char dirs, old cache)"
+    )
+
     # Other options
     parser.add_argument(
         "--verbose", "-v",
@@ -418,8 +495,8 @@ Examples:
         logging.getLogger().setLevel(logging.DEBUG)
 
     # Validate inputs
-    if not any([args.pst, args.documents, args.bronze]):
-        parser.error("Must specify at least one of: --pst, --documents, or --bronze")
+    if not any([args.pst, args.documents, args.bronze, args.classify_attachments, args.cleanup_attachments]):
+        parser.error("Must specify at least one of: --pst, --documents, --bronze, --classify-attachments, or --cleanup-attachments")
 
     # Determine paths
     bronze_path = args.bronze or f"{args.output}/bronze"
@@ -430,6 +507,21 @@ Examples:
 
     # Run pipeline
     try:
+        # Standalone attachment operations (no Silver processing needed)
+        if args.classify_attachments:
+            classify_bronze_attachments(bronze_path)
+
+        if args.cleanup_attachments:
+            cleanup_bronze_attachments(bronze_path)
+
+        # If only attachment flags were set, we're done
+        if not any([args.pst, args.documents, args.bronze]):
+            print("\n" + "=" * 60)
+            print("SUCCESS! Attachment operations completed.")
+            print("=" * 60)
+            print(f"\nBronze layer: {bronze_path}")
+            sys.exit(0)
+
         if args.bronze:
             # Bronze already exists, just process to Silver
             stats = process_bronze_to_silver(
@@ -458,7 +550,7 @@ Examples:
         print(f"\nBronze layer: {bronze_path}")
         print(f"Silver layer: {silver_path}")
 
-        if "silver_stats" in stats:
+        if isinstance(stats, dict) and "silver_stats" in stats:
             print(f"\nChunks created: {stats.get('silver_stats', {}).get('chunks_created', 'N/A')}")
             print(f"PII detected: {stats.get('silver_stats', {}).get('pii_detected', 'N/A')}")
 

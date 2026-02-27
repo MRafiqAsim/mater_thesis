@@ -4,6 +4,9 @@ Attachment Content Processor
 Extracts text content from email attachments for KG processing.
 Supports: PDF, DOCX, XLSX, PPTX, TXT, CSV, RTF
 
+Metadata is co-located alongside each binary file as {filename}.json
+inside the classified subdirectory (knowledge_docs/, transactional_docs/, other_docs/).
+
 Usage:
     processor = AttachmentProcessor(bronze_path="./data/bronze")
     content = processor.process_attachment(attachment_id, filename)
@@ -13,6 +16,7 @@ Usage:
 """
 
 import logging
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -80,6 +84,8 @@ class AttachmentProcessor:
     Processes email attachments to extract text content.
 
     Works with attachments saved during PST extraction.
+    Metadata JSON is co-located alongside each binary file in the
+    classified subdirectory.
     """
 
     SUPPORTED_EXTENSIONS = {
@@ -91,7 +97,6 @@ class AttachmentProcessor:
         self,
         bronze_path: str,
         extract_tables: bool = True,
-        cache_extracted: bool = True
     ):
         """
         Initialize attachment processor.
@@ -99,13 +104,10 @@ class AttachmentProcessor:
         Args:
             bronze_path: Path to Bronze layer
             extract_tables: Extract tables from documents
-            cache_extracted: Cache extracted text to avoid re-processing
         """
         self.bronze_path = Path(bronze_path)
         self.attachments_dir = self.bronze_path / "attachments"
-        self.cache_dir = self.bronze_path / "attachments_cache"
         self.extract_tables = extract_tables
-        self.cache_extracted = cache_extracted
 
         # Initialize document parser
         self.parser = DocumentParser(extract_tables=extract_tables)
@@ -113,9 +115,15 @@ class AttachmentProcessor:
         # Initialize classifier for Bronze-layer classification
         self.classifier = AttachmentClassifier(bronze_path=bronze_path)
 
-        # Create cache directory
-        if cache_extracted:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Classified subdirectories
+        self.knowledge_dir = self.attachments_dir / "knowledge_docs"
+        self.transactional_dir = self.attachments_dir / "transactional_docs"
+        self.other_dir = self.attachments_dir / "other_docs"
+        for d in [self.knowledge_dir, self.transactional_dir, self.other_dir]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        # Legacy cache dir (read-only, for backward compat migration)
+        self._legacy_cache_dir = self.bronze_path / "attachments_cache"
 
         # Statistics
         self.stats = {
@@ -126,17 +134,21 @@ class AttachmentProcessor:
             "unsupported": 0,
         }
 
-        # Load email-attachment mapping
+        # Load email-attachment mapping (also builds _email_file_paths index)
         self.email_attachments = self._load_attachment_mapping()
 
     def _load_attachment_mapping(self) -> Dict[str, List[Dict[str, Any]]]:
         """
         Load mapping of emails to their attachments from email metadata.
 
+        Also builds ``self._email_file_paths`` mapping email_id → Path to
+        its JSON file, so we can enrich emails without re-scanning.
+
         Returns:
             Dict mapping email_id to list of attachment info
         """
         mapping = {}
+        self._email_file_paths: Dict[str, Path] = {}
         emails_dir = self.bronze_path / "emails"
 
         if not emails_dir.exists():
@@ -145,11 +157,17 @@ class AttachmentProcessor:
 
         # Scan all email JSON files
         for email_file in emails_dir.rglob("*.json"):
+            if "metadata" in email_file.parts:
+                continue
             try:
                 with open(email_file, "r", encoding="utf-8") as f:
                     email_data = json.load(f)
 
                 email_id = email_data.get("message_id") or email_file.stem
+
+                # Index the file path for later enrichment
+                self._email_file_paths[email_id] = email_file
+
                 has_attachments = email_data.get("has_attachments", False)
                 attachment_count = email_data.get("attachment_count", 0)
 
@@ -171,51 +189,119 @@ class AttachmentProcessor:
         logger.info(f"Found {len(mapping)} emails with attachments")
         return mapping
 
-    def _get_cache_path(self, attachment_id: str) -> Path:
-        """Get cache file path for an attachment"""
-        return self.cache_dir / f"{attachment_id}.json"
+    # ------------------------------------------------------------------
+    # Co-located metadata (replaces the old attachments_cache/ directory)
+    # ------------------------------------------------------------------
 
-    def _load_from_cache(self, attachment_id: str) -> Optional[AttachmentContent]:
-        """Load extracted content from cache"""
-        cache_path = self._get_cache_path(attachment_id)
+    def _get_metadata_path(
+        self, attachment_id: str, filename: str, classification: str = ""
+    ) -> Path:
+        """Metadata JSON lives alongside the binary file in the classified dir."""
+        if classification:
+            dir_map = {
+                "knowledge": self.knowledge_dir,
+                "transactional": self.transactional_dir,
+            }
+            target_dir = dir_map.get(classification, self.other_dir)
+        else:
+            # Not yet classified — check classified dirs, then fall back to root
+            for d in [self.knowledge_dir, self.transactional_dir, self.other_dir]:
+                candidate = d / attachment_id / f"{filename}.json"
+                if candidate.exists():
+                    return candidate
+            target_dir = self.attachments_dir
+        return target_dir / attachment_id / f"{filename}.json"
 
-        if cache_path.exists():
-            try:
-                with open(cache_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+    def _load_metadata(self, attachment_id: str, filename: str) -> Optional[AttachmentContent]:
+        """Load extracted content from co-located metadata JSON.
 
-                return AttachmentContent(
-                    attachment_id=data["attachment_id"],
-                    filename=data["filename"],
-                    email_id=data["email_id"],
-                    text=data["text"],
-                    doc_type=data["doc_type"],
-                    page_count=data.get("page_count", 0),
-                    file_size=data.get("file_size", 0),
-                    extraction_success=data.get("extraction_success", True),
-                    error_message=data.get("error_message", ""),
-                    has_tables=data.get("has_tables", False),
-                    classification=data.get("classification", ""),
-                    classification_confidence=data.get("classification_confidence", 0.0),
-                    classification_signals=data.get("classification_signals", {}),
-                )
-            except Exception as e:
-                logger.debug(f"Cache load error for {attachment_id}: {e}")
+        Search order:
+        1. Classified dirs (knowledge_docs, transactional_docs, other_docs)
+        2. Root attachments/{att_id}/{filename}.json
+        3. Legacy attachments_cache/{att_id}.json (backward compat)
+        """
+        # 1 + 2: co-located metadata (classification="" triggers dir search)
+        meta_path = self._get_metadata_path(attachment_id, filename)
+        if meta_path.exists():
+            return self._parse_metadata_json(meta_path)
+
+        # 3: Legacy cache fallback
+        legacy_path = self._legacy_cache_dir / f"{attachment_id}.json"
+        if legacy_path.exists():
+            return self._parse_metadata_json(legacy_path)
 
         return None
 
-    def _save_to_cache(self, content: AttachmentContent) -> None:
-        """Save extracted content to cache"""
-        if not self.cache_extracted:
-            return
+    def _parse_metadata_json(self, path: Path) -> Optional[AttachmentContent]:
+        """Parse a metadata JSON file into an AttachmentContent."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
 
-        cache_path = self._get_cache_path(content.attachment_id)
+            return AttachmentContent(
+                attachment_id=data["attachment_id"],
+                filename=data["filename"],
+                email_id=data["email_id"],
+                text=data["text"],
+                doc_type=data["doc_type"],
+                page_count=data.get("page_count", 0),
+                file_size=data.get("file_size", 0),
+                extraction_success=data.get("extraction_success", True),
+                error_message=data.get("error_message", ""),
+                has_tables=data.get("has_tables", False),
+                classification=data.get("classification", ""),
+                classification_confidence=data.get("classification_confidence", 0.0),
+                classification_signals=data.get("classification_signals", {}),
+            )
+        except Exception as e:
+            logger.debug(f"Metadata load error for {path}: {e}")
+            return None
+
+    def _save_metadata(self, content: AttachmentContent) -> None:
+        """Save extracted content as co-located JSON alongside the binary file."""
+        meta_path = self._get_metadata_path(
+            content.attachment_id, content.filename, content.classification
+        )
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(content.to_dict(), f, indent=2)
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(content.to_dict(), f, indent=2, ensure_ascii=False, default=str)
         except Exception as e:
-            logger.debug(f"Cache save error for {content.attachment_id}: {e}")
+            logger.debug(f"Metadata save error for {content.attachment_id}: {e}")
+
+    # ------------------------------------------------------------------
+    # File storage helpers
+    # ------------------------------------------------------------------
+
+    def _store_classified_file(
+        self,
+        classification: str,
+        attachment_id: str,
+        filename: str,
+        source_path: Path,
+    ) -> None:
+        """Move the original file into the classified subdirectory.
+
+        After moving, removes the now-empty source directory (the
+        root-level ``attachments/{att_id}/`` folder).
+        """
+        dir_map = {
+            "knowledge": self.knowledge_dir,
+            "transactional": self.transactional_dir,
+        }
+        target_dir = dir_map.get(classification, self.other_dir)
+        dest = target_dir / attachment_id
+        dest.mkdir(parents=True, exist_ok=True)
+        dest_file = dest / filename
+        if not dest_file.exists():
+            shutil.move(str(source_path), str(dest_file))
+            # Remove empty source directory left behind
+            source_dir = source_path.parent
+            if (source_dir != self.attachments_dir
+                    and source_dir.exists()
+                    and not any(source_dir.iterdir())):
+                source_dir.rmdir()
 
     def find_attachment_file(
         self,
@@ -223,27 +309,83 @@ class AttachmentProcessor:
         filename: str
     ) -> Optional[Path]:
         """
-        Find the attachment file on disk.
+        Find the attachment binary file on disk (skips .json metadata files).
 
-        Attachments are saved in: attachments/{attachment_id}/{filename}
+        Checks (in order):
+        1. Root location: attachments/{attachment_id}/{filename}
+        2. Classified subdirs: knowledge_docs/, transactional_docs/, other_docs/
+        3. Fallback glob in root (skip classified dirs)
         """
-        # Try direct path
+        # 1. Try root path (pre-classification location)
         direct_path = self.attachments_dir / attachment_id / filename
-        if direct_path.exists():
+        if direct_path.exists() and not direct_path.suffix == ".json":
             return direct_path
 
-        # Try searching by attachment_id directory
         att_dir = self.attachments_dir / attachment_id
-        if att_dir.exists():
-            files = list(att_dir.iterdir())
+        if att_dir.exists() and att_dir.is_dir():
+            files = [f for f in att_dir.iterdir() if not f.name.endswith(".json")]
             if files:
                 return files[0]
 
-        # Try searching by filename pattern
+        # 2. Try classified subdirectories (post-classification location)
+        for classified_dir in [self.knowledge_dir, self.transactional_dir, self.other_dir]:
+            classified_path = classified_dir / attachment_id / filename
+            if classified_path.exists():
+                return classified_path
+            classified_att_dir = classified_dir / attachment_id
+            if classified_att_dir.exists() and classified_att_dir.is_dir():
+                files = [f for f in classified_att_dir.iterdir() if not f.name.endswith(".json")]
+                if files:
+                    return files[0]
+
+        # 3. Fallback: glob in root (skip classified dirs and .json metadata)
+        classified_dirs = {self.knowledge_dir, self.transactional_dir, self.other_dir}
         for path in self.attachments_dir.rglob(filename):
+            if path.name.endswith(".json"):
+                continue
+            if any(path.is_relative_to(d) for d in classified_dirs):
+                continue
             return path
 
         return None
+
+    # ------------------------------------------------------------------
+    # Email JSON enrichment
+    # ------------------------------------------------------------------
+
+    def _enrich_email_json(
+        self,
+        email_id: str,
+        attachment_id: str,
+        classification: str,
+        confidence: float,
+    ) -> None:
+        """Write classification back into the email JSON's attachment entry."""
+        email_file = self._email_file_paths.get(email_id)
+        if not email_file or not email_file.exists():
+            return
+
+        try:
+            with open(email_file, "r", encoding="utf-8") as f:
+                email_data = json.load(f)
+
+            for att in email_data.get("attachments", []):
+                if att.get("attachment_id") == attachment_id:
+                    att["classification"] = classification
+                    att["classification_confidence"] = confidence
+                    break
+            else:
+                return  # attachment not found in list
+
+            with open(email_file, "w", encoding="utf-8") as f:
+                json.dump(email_data, f, indent=2, ensure_ascii=False, default=str)
+
+        except Exception as e:
+            logger.debug(f"Email enrichment error for {email_id}/{attachment_id}: {e}")
+
+    # ------------------------------------------------------------------
+    # Main processing
+    # ------------------------------------------------------------------
 
     def process_attachment(
         self,
@@ -266,19 +408,27 @@ class AttachmentProcessor:
         """
         self.stats["processed"] += 1
 
-        # Check cache first
-        if self.cache_extracted:
-            cached = self._load_from_cache(attachment_id)
-            if cached:
-                # Backward-compatible: re-classify old cache entries missing classification
-                if not cached.classification:
-                    result = self.classifier.classify(cached)
-                    cached.classification = result.classification
-                    cached.classification_confidence = result.confidence
-                    cached.classification_signals = result.signals
-                    self._save_to_cache(cached)
-                self.stats["cached"] += 1
-                return cached
+        # Check co-located metadata first
+        cached = self._load_metadata(attachment_id, filename)
+        if cached:
+            # Backward-compatible: re-classify old entries missing classification
+            if not cached.classification:
+                result = self.classifier.classify(cached)
+                cached.classification = result.classification
+                cached.classification_confidence = result.confidence
+                cached.classification_signals = result.signals
+                # Move file into classified dir
+                original = self.find_attachment_file(attachment_id, filename)
+                if original:
+                    self._store_classified_file(
+                        result.classification, attachment_id, filename, original
+                    )
+                self._save_metadata(cached)
+                self._enrich_email_json(
+                    email_id, attachment_id, result.classification, result.confidence
+                )
+            self.stats["cached"] += 1
+            return cached
 
         # Check file extension
         ext = Path(filename).suffix.lower()
@@ -333,10 +483,21 @@ class AttachmentProcessor:
             content.classification_confidence = cls_result.confidence
             content.classification_signals = cls_result.signals
 
+            # Organize file into classified subdirectory
+            self._store_classified_file(
+                cls_result.classification, attachment_id, filename, file_path
+            )
+
             self.stats["success"] += 1
 
-            # Cache the result
-            self._save_to_cache(content)
+            # Save co-located metadata
+            self._save_metadata(content)
+
+            # Enrich the parent email JSON with classification info
+            self._enrich_email_json(
+                email_id, attachment_id,
+                cls_result.classification, cls_result.confidence
+            )
 
             return content
 
@@ -452,7 +613,14 @@ class AttachmentProcessor:
             logger.warning(f"Attachments directory not found: {self.attachments_dir}")
             return files
 
+        # Skip classified subdirectories (they contain copies)
+        classified_dirs = {self.knowledge_dir, self.transactional_dir, self.other_dir}
+
         for file_path in self.attachments_dir.rglob("*"):
+            if any(file_path.is_relative_to(d) for d in classified_dirs):
+                continue
+            if file_path.name.endswith(".json"):
+                continue
             if file_path.is_file() and file_path.suffix.lower() in self.SUPPORTED_EXTENSIONS:
                 # Derive attachment_id from directory structure
                 att_id = file_path.parent.name if file_path.parent != self.attachments_dir else file_path.stem
@@ -467,6 +635,94 @@ class AttachmentProcessor:
 
         logger.info(f"Found {len(files)} attachment files")
         return files
+
+    # ------------------------------------------------------------------
+    # Legacy storage cleanup
+    # ------------------------------------------------------------------
+
+    def cleanup_legacy_storage(self) -> Dict[str, int]:
+        """Remove legacy duplicate storage and migrate old cache to co-located metadata.
+
+        Actions:
+        1. Remove 32-char email_id directories (BronzeLayerLoader duplicates)
+        2. Migrate old attachments_cache/*.json → co-located alongside classified files
+        3. Remove empty root-level attachment directories
+        4. Remove attachments_cache/ directory if empty
+
+        Returns:
+            Cleanup statistics
+        """
+        cleanup_stats = {
+            "legacy_dirs_removed": 0,
+            "cache_files_migrated": 0,
+            "empty_dirs_removed": 0,
+        }
+
+        classified_dir_names = {"knowledge_docs", "transactional_docs", "other_docs"}
+
+        # 1. Remove 32-char email_id directories (BronzeLayerLoader duplicates)
+        if self.attachments_dir.exists():
+            for child in sorted(self.attachments_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                if child.name in classified_dir_names:
+                    continue
+                # PSTExtractor uses 12-char MD5 IDs; BronzeLayerLoader uses 32-char email IDs
+                if len(child.name) >= 20:
+                    shutil.rmtree(child)
+                    cleanup_stats["legacy_dirs_removed"] += 1
+                    logger.debug(f"Removed legacy dir: {child.name}")
+
+        # 2. Migrate old attachments_cache/*.json → co-located metadata
+        if self._legacy_cache_dir.exists():
+            for cache_file in self._legacy_cache_dir.glob("*.json"):
+                try:
+                    with open(cache_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+
+                    att_id = data.get("attachment_id", "")
+                    filename = data.get("filename", "")
+                    classification = data.get("classification", "")
+
+                    if att_id and filename and classification:
+                        meta_path = self._get_metadata_path(att_id, filename, classification)
+                        if not meta_path.exists():
+                            meta_path.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(cache_file), str(meta_path))
+                            cleanup_stats["cache_files_migrated"] += 1
+                        else:
+                            # Co-located version already exists, remove legacy
+                            cache_file.unlink()
+                            cleanup_stats["cache_files_migrated"] += 1
+                    else:
+                        # Unclassified cache entry — leave for now (will be re-processed)
+                        logger.debug(f"Skipping unclassified cache: {cache_file.name}")
+
+                except Exception as e:
+                    logger.debug(f"Error migrating cache file {cache_file}: {e}")
+
+        # 3. Remove empty root-level attachment directories
+        if self.attachments_dir.exists():
+            for child in sorted(self.attachments_dir.iterdir()):
+                if not child.is_dir():
+                    continue
+                if child.name in classified_dir_names:
+                    continue
+                if not any(child.iterdir()):
+                    child.rmdir()
+                    cleanup_stats["empty_dirs_removed"] += 1
+
+        # 4. Remove attachments_cache/ if empty
+        if self._legacy_cache_dir.exists() and not any(self._legacy_cache_dir.iterdir()):
+            self._legacy_cache_dir.rmdir()
+            logger.info("Removed empty attachments_cache/ directory")
+
+        logger.info(
+            f"Cleanup complete: {cleanup_stats['legacy_dirs_removed']} legacy dirs removed, "
+            f"{cleanup_stats['cache_files_migrated']} cache files migrated, "
+            f"{cleanup_stats['empty_dirs_removed']} empty dirs removed"
+        )
+        return cleanup_stats
 
 
 def extract_attachment_text(

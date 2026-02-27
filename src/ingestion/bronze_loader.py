@@ -66,7 +66,6 @@ class BronzeLayerLoader:
         self.stats = {
             "emails_loaded": 0,
             "documents_loaded": 0,
-            "attachments_loaded": 0,
             "errors": 0,
             "start_time": datetime.now().isoformat(),
         }
@@ -122,10 +121,6 @@ class BronzeLayerLoader:
                 self._write_to_azure(str(email_path), json.dumps(email_data, default=str))
 
             self.stats["emails_loaded"] += 1
-
-            # Save attachments
-            for attachment in email.attachments:
-                self._save_attachment(attachment, email.message_id)
 
             return str(email_path)
 
@@ -247,28 +242,6 @@ class BronzeLayerLoader:
             logger.info(f"Loaded final batch: {len(batch)} documents")
 
         return self.stats.copy()
-
-    def _save_attachment(self, attachment, email_id: str) -> str:
-        """Save an email attachment"""
-        try:
-            att_dir = self.bronze_path / "attachments" / email_id
-            att_dir.mkdir(parents=True, exist_ok=True)
-
-            att_path = att_dir / attachment.filename
-
-            if self.storage_type == "local":
-                with open(att_path, "wb") as f:
-                    f.write(attachment.content)
-            else:
-                self._write_bytes_to_azure(str(att_path), attachment.content)
-
-            self.stats["attachments_loaded"] += 1
-
-            return str(att_path)
-
-        except Exception as e:
-            logger.warning(f"Failed to save attachment {attachment.filename}: {e}")
-            return ""
 
     def save_metadata(self) -> str:
         """Save ingestion metadata and statistics"""
