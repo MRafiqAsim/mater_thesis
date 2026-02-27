@@ -24,6 +24,7 @@ from ingestion.thread_grouper import ThreadGrouper, EmailThread
 from ingestion.chunker import SemanticChunker, Chunk
 from ingestion.language_detector import LanguageDetector
 from ingestion.attachment_processor import AttachmentProcessor
+from ingestion.email_text_cleaner import clean_email_text
 from anonymization.pii_detector import PIIDetector
 from anonymization.anonymizer import Anonymizer, AnonymizationStrategy
 from extraction.kg_entity_extractor import (
@@ -241,7 +242,6 @@ class ThreadAwareProcessor:
         self.include_attachment_text = include_attachment_text
 
         # Attachment classification limits (configurable via env)
-        self.max_tokens_transactional = int(os.environ.get("ATTACHMENT_MAX_TOKENS_TRANSACTIONAL", "2500"))
         self.max_tokens_knowledge = int(os.environ.get("ATTACHMENT_MAX_TOKENS_KNOWLEDGE", "0"))
         self.attachment_processor = None
 
@@ -311,6 +311,7 @@ class ThreadAwareProcessor:
             "kg_relationships_extracted": 0,
             "attachments_processed": 0,
             "attachments_with_text": 0,
+            "attachments_skipped_non_knowledge": 0,
             "attachment_chunks_created": 0,
             "errors": 0,
             "start_time": None,
@@ -382,23 +383,20 @@ class ThreadAwareProcessor:
             if not att_content.extraction_success or not att_content.text.strip():
                 continue
 
-            self.stats["attachments_with_text"] += 1
-
             # Use classification from Bronze layer (set by AttachmentClassifier)
             classification = att_content.classification or "knowledge"
 
-            # Truncate based on classification
+            # Only process knowledge attachments; skip transactional and other
+            if classification != "knowledge":
+                logger.info(f"Skipping {classification} attachment '{att_content.filename}'")
+                self.stats["attachments_skipped_non_knowledge"] += 1
+                continue
+
+            self.stats["attachments_with_text"] += 1
+
+            # Optionally truncate knowledge attachments
             text = att_content.text
-            if classification == "transactional" and self.max_tokens_transactional > 0:
-                # Approximate token count: ~4 chars per token
-                max_chars = self.max_tokens_transactional * 4
-                if len(text) > max_chars:
-                    text = text[:max_chars]
-                    logger.info(
-                        f"Truncated transactional attachment '{att_content.filename}' "
-                        f"from {len(att_content.text)} to {max_chars} chars"
-                    )
-            elif classification == "knowledge" and self.max_tokens_knowledge > 0:
+            if self.max_tokens_knowledge > 0:
                 max_chars = self.max_tokens_knowledge * 4
                 if len(text) > max_chars:
                     text = text[:max_chars]
@@ -464,8 +462,7 @@ class ThreadAwareProcessor:
             self.silver_path / "thread_chunks",                       # Thread-aware chunks
             self.silver_path / "thread_summaries",                    # Thread summaries
             self.silver_path / "individual_chunks",                   # Single email chunks
-            self.silver_path / "attachment_chunks" / "knowledge",     # Knowledge attachments
-            self.silver_path / "attachment_chunks" / "transactional", # Transactional attachments
+            self.silver_path / "attachment_chunks" / "knowledge",     # Knowledge attachments only
             self.silver_path / "pii_mappings",
             self.silver_path / "metadata",
         ]
@@ -534,6 +531,7 @@ class ThreadAwareProcessor:
 
         # Concatenate thread emails (body text only, no attachments)
         thread_text = thread.to_concatenated_text(include_metadata=True)
+        thread_text = clean_email_text(thread_text)
 
         # Collect attachment metadata and contents for separate processing
         all_attachment_filenames = []
@@ -642,6 +640,7 @@ class ThreadAwareProcessor:
 
         # Get email body text only (no attachments)
         email_text, _ = self._format_single_email(email, include_attachments=False)
+        email_text = clean_email_text(email_text)
 
         # Collect attachment contents separately
         attachment_filenames = []
