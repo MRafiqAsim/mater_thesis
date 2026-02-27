@@ -6,6 +6,8 @@ from .document_parser import DocumentParser, ParsedDocument
 from .chunker import SemanticChunker, Chunk
 from .language_detector import LanguageDetector
 from .bronze_loader import BronzeLayerLoader
+from .attachment_processor import AttachmentProcessor, AttachmentContent
+from .attachment_classifier import AttachmentClassifier, ClassificationResult
 
 __all__ = [
     "PSTExtractor",
@@ -16,4 +18,8 @@ __all__ = [
     "Chunk",
     "LanguageDetector",
     "BronzeLayerLoader",
+    "AttachmentProcessor",
+    "AttachmentContent",
+    "AttachmentClassifier",
+    "ClassificationResult",
 ]
