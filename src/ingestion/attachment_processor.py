@@ -119,7 +119,8 @@ class AttachmentProcessor:
         self.knowledge_dir = self.attachments_dir / "knowledge_docs"
         self.transactional_dir = self.attachments_dir / "transactional_docs"
         self.other_dir = self.attachments_dir / "other_docs"
-        for d in [self.knowledge_dir, self.transactional_dir, self.other_dir]:
+        self.unsupported_dir = self.attachments_dir / "unsupported_docs"
+        for d in [self.knowledge_dir, self.transactional_dir, self.other_dir, self.unsupported_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
         # Legacy cache dir (read-only, for backward compat migration)
@@ -201,11 +202,13 @@ class AttachmentProcessor:
             dir_map = {
                 "knowledge": self.knowledge_dir,
                 "transactional": self.transactional_dir,
+                "unsupported": self.unsupported_dir,
             }
             target_dir = dir_map.get(classification, self.other_dir)
         else:
-            # Not yet classified — check classified dirs, then fall back to root
-            for d in [self.knowledge_dir, self.transactional_dir, self.other_dir]:
+            # Not yet classified — check all subdirs, then fall back to root
+            all_dirs = [self.knowledge_dir, self.transactional_dir, self.other_dir, self.unsupported_dir]
+            for d in all_dirs:
                 candidate = d / attachment_id / f"{filename}.json"
                 if candidate.exists():
                     return candidate
@@ -289,6 +292,7 @@ class AttachmentProcessor:
         dir_map = {
             "knowledge": self.knowledge_dir,
             "transactional": self.transactional_dir,
+            "unsupported": self.unsupported_dir,
         }
         target_dir = dir_map.get(classification, self.other_dir)
         dest = target_dir / attachment_id
@@ -296,12 +300,17 @@ class AttachmentProcessor:
         dest_file = dest / filename
         if not dest_file.exists():
             shutil.move(str(source_path), str(dest_file))
-            # Remove empty source directory left behind
-            source_dir = source_path.parent
-            if (source_dir != self.attachments_dir
-                    and source_dir.exists()
-                    and not any(source_dir.iterdir())):
-                source_dir.rmdir()
+        elif source_path.exists() and source_path != dest_file:
+            # Dest already has this file (e.g. same attachment in multiple emails)
+            # Remove the duplicate source
+            source_path.unlink()
+
+        # Remove empty source directory left behind
+        source_dir = source_path.parent
+        if (source_dir != self.attachments_dir
+                and source_dir.exists()
+                and not any(source_dir.iterdir())):
+            source_dir.rmdir()
 
     def find_attachment_file(
         self,
@@ -328,7 +337,7 @@ class AttachmentProcessor:
                 return files[0]
 
         # 2. Try classified subdirectories (post-classification location)
-        for classified_dir in [self.knowledge_dir, self.transactional_dir, self.other_dir]:
+        for classified_dir in [self.knowledge_dir, self.transactional_dir, self.other_dir, self.unsupported_dir]:
             classified_path = classified_dir / attachment_id / filename
             if classified_path.exists():
                 return classified_path
@@ -339,7 +348,7 @@ class AttachmentProcessor:
                     return files[0]
 
         # 3. Fallback: glob in root (skip classified dirs and .json metadata)
-        classified_dirs = {self.knowledge_dir, self.transactional_dir, self.other_dir}
+        classified_dirs = {self.knowledge_dir, self.transactional_dir, self.other_dir, self.unsupported_dir}
         for path in self.attachments_dir.rglob(filename):
             if path.name.endswith(".json"):
                 continue
@@ -434,15 +443,23 @@ class AttachmentProcessor:
         ext = Path(filename).suffix.lower()
         if ext not in self.SUPPORTED_EXTENSIONS:
             self.stats["unsupported"] += 1
-            return AttachmentContent(
+            # Move file into unsupported_docs/ so root stays clean
+            source = self.find_attachment_file(attachment_id, filename)
+            if source:
+                self._store_classified_file("unsupported", attachment_id, filename, source)
+            content = AttachmentContent(
                 attachment_id=attachment_id,
                 filename=filename,
                 email_id=email_id,
                 text="",
-                doc_type=ext,
+                doc_type=ext or "unknown",
                 extraction_success=False,
-                error_message=f"Unsupported file type: {ext}"
+                error_message=f"Unsupported file type: {ext or 'none'}",
+                classification="unsupported",
             )
+            self._save_metadata(content)
+            self._enrich_email_json(email_id, attachment_id, "unsupported", 0.0)
+            return content
 
         # Find the file
         if file_path is None:
@@ -613,8 +630,8 @@ class AttachmentProcessor:
             logger.warning(f"Attachments directory not found: {self.attachments_dir}")
             return files
 
-        # Skip classified subdirectories (they contain copies)
-        classified_dirs = {self.knowledge_dir, self.transactional_dir, self.other_dir}
+        # Skip classified subdirectories (they contain organized files)
+        classified_dirs = {self.knowledge_dir, self.transactional_dir, self.other_dir, self.unsupported_dir}
 
         for file_path in self.attachments_dir.rglob("*"):
             if any(file_path.is_relative_to(d) for d in classified_dirs):
@@ -658,7 +675,7 @@ class AttachmentProcessor:
             "empty_dirs_removed": 0,
         }
 
-        classified_dir_names = {"knowledge_docs", "transactional_docs", "other_docs"}
+        classified_dir_names = {"knowledge_docs", "transactional_docs", "other_docs", "unsupported_docs"}
 
         # 1. Remove 32-char email_id directories (BronzeLayerLoader duplicates)
         if self.attachments_dir.exists():
