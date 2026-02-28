@@ -58,7 +58,6 @@ class PIIEntity:
             "method": self.detection_method,
         }
 
-
 class PIIDetector:
     """
     Detect PII in text using multiple methods.
@@ -118,6 +117,42 @@ class PIIDetector:
         PIIType.IP_ADDRESS,
     ]
 
+    # PERSON blocklist — common false positives from spaCy/Presidio
+    PERSON_BLOCKLIST = {
+        "tel", "telephone", "cell", "fax", "mobile",
+        "goodbye", "regards", "thanks", "cheers", "sincerely",
+        "sent", "received", "from", "to", "cc", "bcc", "subject",
+        "date", "time", "attachment", "forwarded",
+        "se", "advisory se", "ocr status", "ocr",
+        "dear", "hi", "hello", "good morning", "good afternoon",
+        "monday", "tuesday", "wednesday", "thursday", "friday",
+        "saturday", "sunday",
+        "january", "february", "march", "april", "may", "june",
+        "july", "august", "september", "october", "november", "december",
+        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+        "re", "fw", "fwd",
+    }
+
+    # Type priority for merge conflicts — higher number wins
+    TYPE_PRIORITY = {
+        PIIType.EMAIL: 10,
+        PIIType.IP_ADDRESS: 9,
+        PIIType.IBAN: 9,
+        PIIType.CREDIT_CARD: 9,
+        PIIType.SSN: 9,
+        PIIType.BSN: 8,
+        PIIType.URL: 7,
+        PIIType.PHONE: 5,
+        PIIType.PERSON: 6,
+        PIIType.ORGANIZATION: 4,
+        PIIType.LOCATION: 4,
+        PIIType.ADDRESS: 4,
+        PIIType.LICENSE_PLATE: 6,
+        PIIType.PASSPORT: 8,
+        PIIType.ID_NUMBER: 7,
+        PIIType.DATE_OF_BIRTH: 3,
+    }
+
     def __init__(
         self,
         entities: Optional[List[PIIType]] = None,
@@ -125,7 +160,8 @@ class PIIDetector:
         use_presidio: bool = True,
         use_spacy: bool = True,
         use_regex: bool = True,
-        confidence_threshold: float = 0.5
+        confidence_threshold: float = 0.5,
+        identity_registry=None
     ):
         """
         Initialize the PII detector.
@@ -137,6 +173,7 @@ class PIIDetector:
             use_spacy: Use spaCy NER
             use_regex: Use regex patterns
             confidence_threshold: Minimum confidence for detection
+            identity_registry: Optional IdentityRegistry for PERSON validation
         """
         self.entities = entities or self.DEFAULT_ENTITIES
         self.languages = languages or ["en", "nl"]
@@ -144,6 +181,7 @@ class PIIDetector:
         self.use_spacy = use_spacy
         self.use_regex = use_regex
         self.confidence_threshold = confidence_threshold
+        self.identity_registry = identity_registry
 
         # Initialize detection engines
         self._presidio_analyzer = None
@@ -161,13 +199,35 @@ class PIIDetector:
             from presidio_analyzer import AnalyzerEngine
             from presidio_analyzer.nlp_engine import NlpEngineProvider
 
-            # Configure NLP engine
+            # Entity labels to ignore (not PII)
+            # These are spaCy NER labels that aren't personally identifiable
+            labels_to_ignore = [
+                "CARDINAL",     # Numbers (one, two, 100)
+                "ORDINAL",      # Ordinal numbers (first, second)
+                "QUANTITY",     # Quantities (3 gallons, 5 kg)
+                "PERCENT",      # Percentages (50%)
+                "MONEY",        # Money amounts ($100)
+                "TIME",         # Times (4pm, noon)
+                "DATE",         # Dates (May 2013) - not DOB
+                "FAC",          # Facilities (buildings, airports)
+                "WORK_OF_ART",  # Titles of works
+                "LAW",          # Laws, regulations
+                "LANGUAGE",     # Languages
+                "EVENT",        # Named events
+                "PRODUCT",      # Products
+                "NORP",         # Nationalities, religions
+            ]
+
+            # Configure NLP engine with labels to ignore
             configuration = {
                 "nlp_engine_name": "spacy",
                 "models": [
                     {"lang_code": "en", "model_name": "en_core_web_lg"},
                     {"lang_code": "nl", "model_name": "nl_core_news_lg"},
                 ],
+                "ner_model_configuration": {
+                    "labels_to_ignore": labels_to_ignore,
+                },
             }
 
             try:
@@ -256,8 +316,19 @@ class PIIDetector:
             regex_entities = self._detect_with_regex(text)
             all_entities.extend(regex_entities)
 
+        # Suppress PERSON entities that are really signature labels (Tel:, Fax:)
+        # in signature blocks
+        cleaned = []
+        for entity in all_entities:
+            # In signature blocks, suppress PERSON if preceded by phone label
+            if entity.pii_type == PIIType.PERSON:
+                preceding = text[max(0, entity.start - 10):entity.start].strip()
+                if re.match(r'(?:Tel|Cell|Fax|Mobile|Ph)\s*:?\s*$', preceding, re.IGNORECASE):
+                    continue
+            cleaned.append(entity)
+
         # Deduplicate and merge overlapping entities
-        merged_entities = self._merge_entities(all_entities)
+        merged_entities = self._merge_entities(cleaned)
 
         # Filter by confidence
         filtered = [e for e in merged_entities
@@ -367,8 +438,8 @@ class PIIDetector:
                         matched_text = matched_text[:-1]
                         end -= 1
 
-                # Validate the match
-                if self._validate_regex_match(matched_text, pii_type):
+                # Validate the match (with full text context for phone validation)
+                if self._validate_regex_match(matched_text, pii_type, text, start):
                     entity = PIIEntity(
                         text=matched_text,
                         pii_type=pii_type,
@@ -381,12 +452,23 @@ class PIIDetector:
 
         return entities
 
-    def _validate_regex_match(self, text: str, pii_type: PIIType) -> bool:
+    # Patterns that look like phone numbers but aren't
+    _DATE_PATTERN = re.compile(
+        r'^\d{4}[-/]\d{2}[-/]\d{2}$|'       # YYYY-MM-DD or YYYY/MM/DD
+        r'^\d{2}[-/]\d{2}[-/]\d{4}$|'       # DD/MM/YYYY or MM/DD/YYYY
+        r'^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$'  # D/M/YY variants
+    )
+    _IP_PATTERN = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
+    _NON_PHONE_CONTEXT = re.compile(
+        r'(?:invoice|ref|ticket|order|lat|lon|longitude|latitude|'
+        r'version|v\.|no\.|nr\.|#|id|case)\s*[:.]?\s*$',
+        re.IGNORECASE
+    )
+
+    def _validate_regex_match(self, text: str, pii_type: PIIType, full_text: str = "", start: int = 0) -> bool:
         """Validate regex match to reduce false positives"""
         if pii_type == PIIType.PHONE:
-            # Must have at least 7 digits
-            digits = re.sub(r'\D', '', text)
-            return len(digits) >= 7
+            return self._validate_phone(text, full_text, start)
 
         if pii_type == PIIType.IP_ADDRESS:
             # Validate IP address format
@@ -399,6 +481,36 @@ class PIIDetector:
         if pii_type == PIIType.BSN:
             # Dutch BSN must pass 11-test
             return self._validate_bsn(text)
+
+        return True
+
+    def _validate_phone(self, text: str, full_text: str = "", start: int = 0) -> bool:
+        """Validate phone number, rejecting dates, IPs, and non-phone number sequences."""
+        # Reject dates (YYYY-MM-DD, DD/MM/YYYY, etc.)
+        if self._DATE_PATTERN.match(text.strip()):
+            return False
+
+        # Reject IP addresses
+        if self._IP_PATTERN.match(text.strip()):
+            return False
+
+        # Must have at least 10 digits (international) or phone-like formatting
+        digits = re.sub(r'\D', '', text)
+
+        # Short digit sequences without phone formatting are not phones
+        has_phone_format = bool(re.search(r'[+\(\)]', text) or re.search(r'\d[-.\s]\d', text))
+
+        if len(digits) < 7:
+            return False
+
+        if len(digits) < 10 and not has_phone_format:
+            return False
+
+        # Check context: preceding words like "invoice", "ref", "ticket"
+        if full_text and start > 0:
+            preceding = full_text[max(0, start - 30):start]
+            if self._NON_PHONE_CONTEXT.search(preceding):
+                return False
 
         return True
 
@@ -416,12 +528,28 @@ class PIIDetector:
             return False
 
     def _merge_entities(self, entities: List[PIIEntity]) -> List[PIIEntity]:
-        """Merge overlapping entities, keeping highest confidence"""
+        """Merge overlapping entities using type priority.
+
+        When two entities overlap, the one with higher TYPE_PRIORITY wins.
+        This prevents, e.g., an IP address from being swallowed by a PHONE match.
+        """
         if not entities:
             return []
 
-        # Sort by start position, then by confidence (desc)
-        sorted_entities = sorted(entities, key=lambda e: (e.start, -e.confidence))
+        # Clean spaCy boundary artifacts from PERSON entities
+        entities = [self._clean_entity_boundaries(e) for e in entities]
+
+        # Validate PERSON entities against blocklist and registry
+        entities = [e for e in entities if self._validate_person_entity(e)]
+
+        if not entities:
+            return []
+
+        # Sort by start position, then by type priority (desc), then confidence (desc)
+        sorted_entities = sorted(
+            entities,
+            key=lambda e: (e.start, -self.TYPE_PRIORITY.get(e.pii_type, 0), -e.confidence)
+        )
 
         merged = []
         current = sorted_entities[0]
@@ -429,8 +557,13 @@ class PIIDetector:
         for next_entity in sorted_entities[1:]:
             # Check for overlap
             if next_entity.start < current.end:
-                # Overlapping - keep higher confidence
-                if next_entity.confidence > current.confidence:
+                # Use type priority to resolve
+                current_priority = self.TYPE_PRIORITY.get(current.pii_type, 0)
+                next_priority = self.TYPE_PRIORITY.get(next_entity.pii_type, 0)
+
+                if next_priority > current_priority:
+                    current = next_entity
+                elif next_priority == current_priority and next_entity.confidence > current.confidence:
                     current = next_entity
                 # If same type, extend the span
                 elif next_entity.pii_type == current.pii_type:
@@ -449,6 +582,94 @@ class PIIDetector:
 
         merged.append(current)
         return merged
+
+    def _clean_entity_boundaries(self, entity: PIIEntity) -> PIIEntity:
+        """Clean spaCy entity boundary artifacts.
+
+        Strips trailing control characters, header labels, and
+        newline-appended text from PERSON entities.
+        """
+        if entity.pii_type != PIIType.PERSON:
+            return entity
+
+        text = entity.text
+
+        # Strip trailing \r\n and whitespace
+        text = text.rstrip()
+
+        # Strip trailing header fragments: \nDate, \nCc:, \r\nSystems Ltd
+        text = re.sub(r'[\r\n]+.*$', '', text)
+
+        # Strip trailing punctuation artifacts
+        text = text.rstrip('.,;:!?')
+
+        if text != entity.text:
+            return PIIEntity(
+                text=text,
+                pii_type=entity.pii_type,
+                start=entity.start,
+                end=entity.start + len(text),
+                confidence=entity.confidence,
+                detection_method=entity.detection_method,
+            )
+
+        return entity
+
+    def _validate_person_entity(self, entity: PIIEntity) -> bool:
+        """Validate PERSON entity, rejecting blocklisted false positives."""
+        if entity.pii_type != PIIType.PERSON:
+            return True
+
+        text = entity.text.strip()
+
+        # Reject very short names (< 3 chars) that aren't in the registry
+        if len(text) < 3:
+            if self.identity_registry:
+                return self.identity_registry.lookup_by_name(text) is not None
+            return False
+
+        # Reject blocklisted names
+        if text.lower() in self.PERSON_BLOCKLIST:
+            return False
+
+        # Reject if text is purely digits
+        if text.replace(" ", "").isdigit():
+            return False
+
+        # Boost confidence for names in registry
+        if self.identity_registry:
+            identity = self.identity_registry.lookup_by_name(text)
+            if identity:
+                # Known person — boost confidence
+                entity_obj = PIIEntity(
+                    text=entity.text,
+                    pii_type=entity.pii_type,
+                    start=entity.start,
+                    end=entity.end,
+                    confidence=max(entity.confidence, 0.95),
+                    detection_method=entity.detection_method,
+                )
+                # Mutate in place since we can't easily return modified
+                entity.confidence = entity_obj.confidence
+
+        return True
+
+    def _is_in_signature_block(self, text: str, start: int) -> bool:
+        """Detect if position is within an email signature block."""
+        # Look backwards for signature markers
+        preceding = text[:start]
+        signature_markers = [
+            r'(?:Best |Kind |Warm )?[Rr]egards\s*[,.]?\s*$',
+            r'[Tt]hanks?\s*[,.]?\s*$',
+            r'[Cc]heers\s*[,.]?\s*$',
+            r'[Ss]incerely\s*[,.]?\s*$',
+            r'--\s*$',
+            r'_{3,}\s*$',
+        ]
+        for marker in signature_markers:
+            if re.search(marker, preceding[-200:] if len(preceding) > 200 else preceding):
+                return True
+        return False
 
     def _map_to_presidio(self, pii_type: PIIType) -> Optional[str]:
         """Map PIIType to Presidio entity type"""

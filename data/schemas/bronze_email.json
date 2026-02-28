@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bronze_email.json",
+  "title": "Bronze Email",
+  "description": "Schema for emails in the Bronze layer after PST extraction with transport header parsing",
+  "type": "object",
+  "required": [
+    "message_id",
+    "source_pst",
+    "folder_path",
+    "subject",
+    "sender",
+    "sender_email",
+    "recipients_to",
+    "recipients_cc",
+    "body_text",
+    "has_attachments",
+    "extraction_time"
+  ],
+  "properties": {
+    "message_id": {
+      "type": "string",
+      "description": "Internal MD5 hash ID generated during extraction"
+    },
+    "source_pst": {
+      "type": "string",
+      "description": "Path to the source PST file"
+    },
+    "folder_path": {
+      "type": "string",
+      "description": "Folder path within the PST file"
+    },
+    "subject": {
+      "type": "string",
+      "description": "Email subject line"
+    },
+    "sender": {
+      "type": "string",
+      "description": "Sender display name"
+    },
+    "sender_email": {
+      "type": "string",
+      "format": "email",
+      "description": "Sender email address parsed from transport headers"
+    },
+    "recipients_to": {
+      "type": "array",
+      "description": "To recipients with structured name+email",
+      "items": {
+        "type": "object",
+        "required": ["name", "email"],
+        "properties": {
+          "name": { "type": "string", "description": "Recipient display name" },
+          "email": { "type": "string", "format": "email", "description": "Recipient email address" }
+        }
+      }
+    },
+    "recipients_cc": {
+      "type": "array",
+      "description": "CC recipients with structured name+email",
+      "items": {
+        "type": "object",
+        "required": ["name", "email"],
+        "properties": {
+          "name": { "type": "string" },
+          "email": { "type": "string", "format": "email" }
+        }
+      }
+    },
+    "sent_time": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "When the email was sent (ISO 8601)"
+    },
+    "received_time": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "When the email was received (ISO 8601)"
+    },
+    "body_text": {
+      "type": "string",
+      "description": "Plain text body content (disclaimers removed)"
+    },
+    "conversation_id": {
+      "type": ["string", "null"],
+      "description": "Outlook conversation topic / thread index"
+    },
+    "in_reply_to": {
+      "type": ["string", "null"],
+      "description": "RFC 2822 In-Reply-To Message-ID (angle brackets stripped)"
+    },
+    "references": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "RFC 2822 References chain of Message-IDs"
+    },
+    "header_message_id": {
+      "type": ["string", "null"],
+      "description": "RFC 2822 Message-ID from transport headers"
+    },
+    "return_path": {
+      "type": ["string", "null"],
+      "description": "Return-Path email address"
+    },
+    "x_originating_ip": {
+      "type": ["string", "null"],
+      "description": "X-Originating-IP from transport headers"
+    },
+    "has_attachments": {
+      "type": "boolean",
+      "description": "Whether the email has attachments"
+    },
+    "attachment_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of attachments"
+    },
+    "attachments": {
+      "type": "array",
+      "description": "Attachment metadata (no binary content)",
+      "items": {
+        "type": "object",
+        "required": ["attachment_id", "filename", "content_type", "size"],
+        "properties": {
+          "attachment_id": { "type": "string" },
+          "filename": { "type": "string" },
+          "content_type": { "type": "string" },
+          "size": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "importance": {
+      "type": "string",
+      "enum": ["low", "normal", "high"],
+      "default": "normal"
+    },
+    "language": {
+      "type": ["string", "null"],
+      "description": "Detected language code (en, nl)"
+    },
+    "extraction_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this email was extracted"
+    }
+  }
+}

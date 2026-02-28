@@ -898,23 +898,29 @@ Text:
             return SilverRecord.from_dict(json.load(f))
 
     async def process_all_bronze(self, skip_existing: bool = True) -> List[SilverRecord]:
-        """Process all Bronze records through all 3 Silver stages.
+        """Process all Bronze records through Silver stages.
+
+        If PROCESS_ANONYMIZATION_SUMMARIZATION_TOGETHER is true, runs combined mode
+        (single pass per record). Otherwise runs 3 separate stages.
 
         Args:
             skip_existing: If True, skip Bronze records that already have Silver output
         """
         from ..bronze.ingestion import BronzeIngestion
-
         bronze = BronzeIngestion(self.config)
 
         # Stage 1: Chunk all bronze records
         chunked_ids = await self.run_all_chunking(bronze, skip_existing=skip_existing)
 
-        # Stage 2: Anonymize all chunked records
-        anonymized_ids = await self.run_all_anonymization(skip_existing=skip_existing)
-
-        # Stage 3: Summarize all anonymized records
-        records = await self.run_all_summarization(skip_existing=skip_existing)
+        if self.config.process_anonymization_summarization_together:
+            # Combined: anonymize + summarize per-record from silver/chunks/
+            logger.info("Combined mode: anonymize + summarize per-record")
+            records = await self.run_all_anonymize_and_summarize(skip_existing=skip_existing)
+        else:
+            # Stage 2: Anonymize all chunked records
+            anonymized_ids = await self.run_all_anonymization(skip_existing=skip_existing)
+            # Stage 3: Summarize all anonymized records
+            records = await self.run_all_summarization(skip_existing=skip_existing)
 
         return records
 
@@ -937,18 +943,24 @@ Text:
                 logger.info(f"Stage 1: Skipping {len(existing_ids)} already chunked records")
 
         chunked_ids = []
+        processed_count = 0
+        threshold = self.config.process_threshold
         for bronze_record in bronze.list_bronze_records():
             if skip_existing and bronze_record.record_id in existing_ids:
                 chunked_ids.append(f"silver_{bronze_record.record_id}")
                 continue
+            if threshold > 0 and processed_count >= threshold:
+                logger.info(f"Stage 1: Reached threshold ({threshold}), stopping")
+                break
             try:
                 result = await self.process_bronze_to_chunks(bronze_record)
                 if result:
                     chunked_ids.append(result.record_id)
+                    processed_count += 1
             except Exception as e:
                 logger.error(f"Stage 1 failed for {bronze_record.record_id}: {e}")
 
-        logger.info(f"Stage 1 complete: {len(chunked_ids)} records in silver/chunks/")
+        logger.info(f"Stage 1 complete: {len(chunked_ids)} records in silver/chunks/ ({processed_count} newly processed)")
         return chunked_ids
 
     async def run_all_anonymization(self, skip_existing: bool = True) -> List[str]:
@@ -965,19 +977,25 @@ Text:
                 logger.info(f"Stage 2: Skipping {len(existing_ids)} already anonymized records")
 
         anonymized_ids = []
+        processed_count = 0
+        threshold = self.config.process_threshold
         for json_file in self.dirs.silver_chunks_dir.glob("*.json"):
             record_id = json_file.stem
             if skip_existing and record_id in existing_ids:
                 anonymized_ids.append(record_id)
                 continue
+            if threshold > 0 and processed_count >= threshold:
+                logger.info(f"Stage 2: Reached threshold ({threshold}), stopping")
+                break
             try:
                 result = await self.anonymize_chunks(record_id)
                 if result:
                     anonymized_ids.append(result.record_id)
+                    processed_count += 1
             except Exception as e:
                 logger.error(f"Stage 2 failed for {record_id}: {e}")
 
-        logger.info(f"Stage 2 complete: {len(anonymized_ids)} records in silver/chunks_anonymized/")
+        logger.info(f"Stage 2 complete: {len(anonymized_ids)} records in silver/chunks_anonymized/ ({processed_count} newly processed)")
         return anonymized_ids
 
     async def run_all_summarization(self, skip_existing: bool = True) -> List[SilverRecord]:
@@ -993,6 +1011,8 @@ Text:
                 logger.info(f"Stage 3: Skipping {len(existing_ids)} already summarized records")
 
         records = []
+        processed_count = 0
+        threshold = self.config.process_threshold
         for json_file in self.dirs.silver_anonymized_dir.glob("*.json"):
             record_id = json_file.stem
             if skip_existing and record_id in existing_ids:
@@ -1001,14 +1021,64 @@ Text:
                 if existing:
                     records.append(existing)
                 continue
+            if threshold > 0 and processed_count >= threshold:
+                logger.info(f"Stage 3: Reached threshold ({threshold}), stopping")
+                break
             try:
                 result = await self.summarize_chunks(record_id)
                 if result:
                     records.append(result)
+                    processed_count += 1
             except Exception as e:
                 logger.error(f"Stage 3 failed for {record_id}: {e}")
 
-        logger.info(f"Stage 3 complete: {len(records)} records in silver/chunks_summarized/")
+        logger.info(f"Stage 3 complete: {len(records)} records in silver/chunks_summarized/ ({processed_count} newly processed)")
+        return records
+
+    async def run_all_anonymize_and_summarize(self, skip_existing: bool = True) -> List[SilverRecord]:
+        """Combined stage 2+3: For each record in silver/chunks/,
+        anonymize → save to chunks_anonymized/ → summarize → save to chunks_summarized/.
+
+        Processes one record fully before moving to the next.
+        Respects process_threshold (only newly processed records count).
+        """
+        if not self.dirs.silver_chunks_dir.exists():
+            logger.warning("No silver/chunks/ directory found")
+            return []
+
+        existing_ids = set()
+        if skip_existing and self.dirs.silver_summarized_dir.exists():
+            existing_ids = {f.stem for f in self.dirs.silver_summarized_dir.glob("*.json")}
+            if existing_ids:
+                logger.info(f"Combined 2+3: Skipping {len(existing_ids)} already processed records")
+
+        records = []
+        processed_count = 0
+        threshold = self.config.process_threshold
+        for json_file in self.dirs.silver_chunks_dir.glob("*.json"):
+            record_id = json_file.stem
+            if skip_existing and record_id in existing_ids:
+                existing = self._load_silver_record(record_id, self.dirs.silver_summarized_dir)
+                if existing:
+                    records.append(existing)
+                continue
+            if threshold > 0 and processed_count >= threshold:
+                logger.info(f"Combined 2+3: Reached threshold ({threshold}), stopping")
+                break
+            try:
+                # Stage 2: Anonymize → saves to chunks_anonymized/
+                anonymized = await self.anonymize_chunks(record_id)
+                if not anonymized:
+                    continue
+                # Stage 3: Summarize → saves to chunks_summarized/
+                summarized = await self.summarize_chunks(anonymized.record_id)
+                if summarized:
+                    records.append(summarized)
+                    processed_count += 1
+            except Exception as e:
+                logger.error(f"Combined 2+3 failed for {record_id}: {e}")
+
+        logger.info(f"Combined 2+3 complete: {len(records)} records ({processed_count} newly processed)")
         return records
 
     def list_silver_records(self) -> List[SilverRecord]:

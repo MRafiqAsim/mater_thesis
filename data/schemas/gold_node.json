@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gold_node.json",
+  "title": "Gold Layer Graph Entities",
+  "description": "Schema for knowledge graph nodes and edges in the Gold layer",
+  "type": "object",
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphNode"
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GraphEdge"
+      }
+    }
+  },
+  "$defs": {
+    "GraphNode": {
+      "type": "object",
+      "required": ["node_id", "label", "entity_type"],
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "description": "Unique node identifier"
+        },
+        "label": {
+          "type": "string",
+          "description": "Display name of the entity"
+        },
+        "entity_type": {
+          "type": "string",
+          "enum": ["PERSON", "ORGANIZATION", "PROJECT", "TECHNOLOGY", "LOCATION", "EVENT", "DOCUMENT", "TOPIC"],
+          "description": "Entity category"
+        },
+        "description": {
+          "type": "string",
+          "description": "Entity description or context"
+        },
+        "source_chunks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Silver chunk_ids where this entity appears"
+        },
+        "community_id": {
+          "type": ["string", "null"],
+          "description": "Community ID from Leiden detection"
+        },
+        "embedding": {
+          "type": "array",
+          "items": { "type": "number" },
+          "description": "Entity embedding vector"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Additional entity metadata"
+        }
+      }
+    },
+    "GraphEdge": {
+      "type": "object",
+      "required": ["source_id", "target_id", "relationship_type"],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "description": "Source node ID"
+        },
+        "target_id": {
+          "type": "string",
+          "description": "Target node ID"
+        },
+        "relationship_type": {
+          "type": "string",
+          "description": "Type of relationship"
+        },
+        "description": {
+          "type": "string",
+          "description": "Natural language description of relationship"
+        },
+        "weight": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Relationship strength"
+        },
+        "keywords": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Keywords associated with this relationship"
+        },
+        "source_chunks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Silver chunk_ids where this relationship appears"
+        }
+      }
+    }
+  }
+}

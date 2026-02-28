@@ -63,7 +63,8 @@ class Anonymizer:
     Anonymize PII in text.
 
     Supports multiple anonymization strategies and maintains
-    consistent replacements across documents.
+    consistent replacements across documents. Optionally uses
+    an IdentityRegistry for stable pseudonyms.
     """
 
     def __init__(
@@ -71,7 +72,8 @@ class Anonymizer:
         detector: Optional[PIIDetector] = None,
         strategy: AnonymizationStrategy = AnonymizationStrategy.REPLACE,
         hash_length: int = 8,
-        consistent_replacement: bool = True
+        consistent_replacement: bool = True,
+        identity_registry=None
     ):
         """
         Initialize the anonymizer.
@@ -81,11 +83,13 @@ class Anonymizer:
             strategy: Default anonymization strategy
             hash_length: Length of hash for HASH strategy
             consistent_replacement: Use same replacement for same PII value
+            identity_registry: Optional IdentityRegistry for stable PERSON pseudonyms
         """
         self.detector = detector or PIIDetector()
         self.strategy = strategy
         self.hash_length = hash_length
         self.consistent_replacement = consistent_replacement
+        self.identity_registry = identity_registry
 
         # Counters for consistent replacement
         self._type_counters: Dict[PIIType, int] = {}
@@ -223,10 +227,26 @@ class Anonymizer:
         return replacement
 
     def _generate_placeholder(self, entity: PIIEntity) -> str:
-        """Generate typed placeholder: [PERSON_1], [EMAIL_2], etc."""
+        """Generate typed placeholder: [PERSON_001], [EMAIL_2], etc.
+
+        For PERSON and EMAIL entities, uses the IdentityRegistry
+        to generate stable pseudonyms linked to real identities.
+        """
         pii_type = entity.pii_type
 
-        # Get or increment counter for this type
+        # Try identity registry for PERSON entities
+        if self.identity_registry and pii_type == PIIType.PERSON:
+            pseudonym = self.identity_registry.get_pseudonym(entity.text)
+            if pseudonym:
+                return f"[{pseudonym}]"
+
+        # Try identity registry for EMAIL entities → link to same person
+        if self.identity_registry and pii_type == PIIType.EMAIL:
+            pseudonym = self.identity_registry.get_pseudonym(entity.text)
+            if pseudonym:
+                return f"[{pseudonym}_EMAIL]"
+
+        # Fallback: auto-increment counter
         if pii_type not in self._type_counters:
             self._type_counters[pii_type] = 0
 

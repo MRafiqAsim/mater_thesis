@@ -60,6 +60,8 @@ gremlinpython>=3.7.0
 igraph>=0.11.0
 leidenalg>=0.10.0
 networkx>=3.2.0
+nano-vectordb>=0.0.4
+graspologic>=3.3.0
 
 # ============================================
 # Evaluation

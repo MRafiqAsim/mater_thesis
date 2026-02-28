@@ -136,6 +136,12 @@ class SimpleRAGConfig:
     chunk_overlap: int = 50
     embedding_batch_size: int = 32
 
+    # Processing limits
+    process_threshold: int = field(default_factory=lambda: int(os.getenv("PROCESS_THRESHOLD", "-1")))
+    process_anonymization_summarization_together: bool = field(
+        default_factory=lambda: os.getenv("PROCESS_ANONYMIZATION_SUMMARIZATION_TOGETHER", "false").lower() == "true"
+    )
+
     # RAG settings
     top_k: int = 10
     similarity_threshold: float = 0.3  # Lower threshold for better recall

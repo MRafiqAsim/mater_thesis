@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Iterator, Dict, Any, Callable
-from email.utils import parsedate_to_datetime
+from email.utils import parsedate_to_datetime, parseaddr, getaddresses
+from email.parser import HeaderParser
 from .disclaimer_remover import remove_disclaimers
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,12 @@ class EmailMessage:
     in_reply_to: Optional[str] = None
     references: List[str] = field(default_factory=list)
 
+    # Transport headers (RFC 2822)
+    header_message_id: Optional[str] = None
+    return_path: Optional[str] = None
+    x_originating_ip: Optional[str] = None
+    transport_headers_raw: Optional[str] = None
+
     # Attachments
     attachments: List[Attachment] = field(default_factory=list)
     has_attachments: bool = False
@@ -90,7 +97,7 @@ class EmailMessage:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
-        return {
+        result = {
             "message_id": self.message_id,
             "source_pst": self.source_pst,
             "folder_path": self.folder_path,
@@ -103,12 +110,31 @@ class EmailMessage:
             "received_time": self.received_time.isoformat() if self.received_time else None,
             "body_text": self.body_text,
             "conversation_id": self.conversation_id,
+            "in_reply_to": self.in_reply_to,
+            "references": self.references,
+            "header_message_id": self.header_message_id,
+            "return_path": self.return_path,
+            "x_originating_ip": self.x_originating_ip,
             "has_attachments": self.has_attachments,
             "attachment_count": len(self.attachments),
             "importance": self.importance,
             "language": self.language,
             "extraction_time": self.extraction_time.isoformat(),
         }
+
+        # Include attachment metadata (without binary content)
+        if self.attachments:
+            result["attachments"] = [
+                {
+                    "attachment_id": att.attachment_id,
+                    "filename": att.filename,
+                    "content_type": att.content_type,
+                    "size": att.size,
+                }
+                for att in self.attachments
+            ]
+
+        return result
 
     def get_full_text(self) -> str:
         """Get full text content for processing"""
@@ -119,7 +145,16 @@ class EmailMessage:
         if self.sender:
             parts.append(f"From: {self.sender}")
         if self.recipients_to:
-            parts.append(f"To: {', '.join(self.recipients_to)}")
+            # Handle both structured dicts and plain strings
+            to_strs = []
+            for r in self.recipients_to:
+                if isinstance(r, dict):
+                    name = r.get("name", "")
+                    email = r.get("email", "")
+                    to_strs.append(f"{name} <{email}>" if name else email)
+                else:
+                    to_strs.append(str(r))
+            parts.append(f"To: {', '.join(to_strs)}")
         if self.sent_time:
             parts.append(f"Date: {self.sent_time.strftime('%Y-%m-%d %H:%M')}")
 
@@ -165,6 +200,9 @@ class PSTExtractor:
             ".pptx", ".ppt", ".txt", ".csv", ".rtf"
         ]
 
+        # Extraction limits
+        self.max_emails = None  # Set during extract()
+
         # Statistics
         self.stats = {
             "total_emails": 0,
@@ -176,7 +214,8 @@ class PSTExtractor:
     def extract(
         self,
         pst_path: str,
-        progress_callback: Optional[Callable[[int, str], None]] = None
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        max_emails: Optional[int] = None
     ) -> Iterator[EmailMessage]:
         """
         Extract all emails from a PST file.
@@ -184,10 +223,12 @@ class PSTExtractor:
         Args:
             pst_path: Path to PST file
             progress_callback: Optional callback(count, status_message)
+            max_emails: Maximum number of emails to extract (None = all)
 
         Yields:
             EmailMessage objects
         """
+        self.max_emails = max_emails
         pst_path = Path(pst_path)
 
         if not pst_path.exists():
@@ -255,6 +296,11 @@ class PSTExtractor:
 
         # Process messages in this folder
         for i in range(folder.number_of_sub_messages):
+            # Check if we've reached the limit
+            if self.max_emails and self.stats["total_emails"] >= self.max_emails:
+                logger.info(f"Reached max_emails limit: {self.max_emails}")
+                return
+
             try:
                 message = folder.get_sub_message(i)
                 email = self._convert_pypff_message(message, pst_path, current_path)
@@ -276,6 +322,10 @@ class PSTExtractor:
 
         # Process subfolders
         for i in range(folder.number_of_sub_folders):
+            # Check limit before processing subfolder
+            if self.max_emails and self.stats["total_emails"] >= self.max_emails:
+                return
+
             try:
                 subfolder = folder.get_sub_folder(i)
                 yield from self._process_folder_pypff(
@@ -284,6 +334,106 @@ class PSTExtractor:
             except Exception as e:
                 logger.warning(f"Error processing subfolder {i}: {e}")
                 self.stats["errors"] += 1
+
+    def _parse_transport_headers(self, message) -> Dict[str, Any]:
+        """
+        Parse RFC 2822 transport headers from a pypff message.
+
+        Extracts structured sender/recipient info, Message-ID,
+        In-Reply-To, References, Return-Path, and X-Originating-IP
+        from the raw transport message headers.
+
+        Returns:
+            Dict with parsed header fields
+        """
+        result = {
+            "sender_name": "",
+            "sender_email": "",
+            "recipients_to": [],
+            "recipients_cc": [],
+            "header_message_id": None,
+            "in_reply_to": None,
+            "references": [],
+            "return_path": None,
+            "x_originating_ip": None,
+            "transport_headers_raw": None,
+        }
+
+        # Get raw transport headers from pypff message
+        raw_headers = None
+        if hasattr(message, 'transport_headers') and message.transport_headers:
+            raw_headers = self._decode_body(message.transport_headers)
+
+        if not raw_headers:
+            return result
+
+        result["transport_headers_raw"] = raw_headers
+
+        try:
+            parser = HeaderParser()
+            headers = parser.parsestr(raw_headers)
+
+            # Parse From header
+            from_header = headers.get("From", "")
+            if from_header:
+                name, email_addr = parseaddr(from_header)
+                if email_addr:
+                    result["sender_email"] = email_addr.lower()
+                if name:
+                    result["sender_name"] = name
+
+            # Parse To header → structured list
+            to_header = headers.get("To", "")
+            if to_header:
+                result["recipients_to"] = [
+                    {"name": name.strip(), "email": addr.lower()}
+                    for name, addr in getaddresses([to_header])
+                    if addr
+                ]
+
+            # Parse Cc header → structured list
+            cc_header = headers.get("Cc", "")
+            if cc_header:
+                result["recipients_cc"] = [
+                    {"name": name.strip(), "email": addr.lower()}
+                    for name, addr in getaddresses([cc_header])
+                    if addr
+                ]
+
+            # Message-ID
+            msg_id = headers.get("Message-ID", "") or headers.get("Message-Id", "")
+            if msg_id:
+                result["header_message_id"] = msg_id.strip().strip("<>")
+
+            # In-Reply-To
+            in_reply = headers.get("In-Reply-To", "")
+            if in_reply:
+                result["in_reply_to"] = in_reply.strip().strip("<>")
+
+            # References (space-separated Message-IDs)
+            refs = headers.get("References", "")
+            if refs:
+                result["references"] = [
+                    r.strip().strip("<>")
+                    for r in refs.split()
+                    if r.strip()
+                ]
+
+            # Return-Path
+            return_path = headers.get("Return-Path", "")
+            if return_path:
+                _, addr = parseaddr(return_path)
+                result["return_path"] = addr.lower() if addr else None
+
+            # X-Originating-IP
+            x_ip = headers.get("X-Originating-IP", "") or headers.get("x-originating-ip", "")
+            if x_ip:
+                result["x_originating_ip"] = x_ip.strip().strip("[]")
+
+        except Exception as e:
+            logger.debug(f"Error parsing transport headers: {e}")
+
+        return result
 
     def _convert_pypff_message(
         self,
@@ -298,15 +448,28 @@ class PSTExtractor:
                 f"{pst_path}:{folder_path}:{message.subject or ''}:{message.delivery_time}".encode()
             ).hexdigest()
 
-            # Parse sender
-            sender = message.sender_name or ""
-            sender_email = ""
-            if hasattr(message, 'sender_email_address'):
-                sender_email = message.sender_email_address or ""
+            # Parse transport headers first (RFC 2822)
+            th = self._parse_transport_headers(message)
 
-            # Parse recipients
-            recipients_to = self._parse_recipients(message, "to")
-            recipients_cc = self._parse_recipients(message, "cc")
+            # Parse sender — prefer transport header over MAPI properties
+            sender = message.sender_name or th["sender_name"] or ""
+            sender_email = th["sender_email"] or ""
+            if not sender_email and hasattr(message, 'sender_email_address'):
+                sender_email = (message.sender_email_address or "").lower()
+
+            # Parse recipients — prefer structured transport headers
+            if th["recipients_to"]:
+                recipients_to = th["recipients_to"]
+            else:
+                # Fallback to MAPI display names
+                raw_to = self._parse_recipients(message, "to")
+                recipients_to = [{"name": r, "email": ""} for r in raw_to]
+
+            if th["recipients_cc"]:
+                recipients_cc = th["recipients_cc"]
+            else:
+                raw_cc = self._parse_recipients(message, "cc")
+                recipients_cc = [{"name": r, "email": ""} for r in raw_cc]
 
             # Parse body
             body_text = ""
@@ -353,6 +516,12 @@ class PSTExtractor:
                 body_text=body_text,
                 body_html=body_html,
                 conversation_id=getattr(message, 'conversation_topic', None),
+                in_reply_to=th["in_reply_to"],
+                references=th["references"],
+                header_message_id=th["header_message_id"],
+                return_path=th["return_path"],
+                x_originating_ip=th["x_originating_ip"],
+                transport_headers_raw=th["transport_headers_raw"],
                 attachments=attachments,
                 has_attachments=len(attachments) > 0,
                 importance=self._parse_importance(message),
@@ -437,11 +606,18 @@ class PSTExtractor:
         attachments = []
 
         try:
-            for i in range(message.number_of_attachments):
+            num_attachments = message.number_of_attachments
+            if num_attachments == 0:
+                return attachments
+
+            for i in range(num_attachments):
                 try:
                     att = message.get_attachment(i)
 
-                    filename = att.name or f"attachment_{i}"
+                    # Get filename from record sets (MAPI property 12289 = PR_ATTACH_FILENAME)
+                    filename = self._get_attachment_filename(att, i)
+
+                    # Get size
                     size = att.size if hasattr(att, 'size') else 0
 
                     # Check size limit
@@ -452,33 +628,104 @@ class PSTExtractor:
                     # Check file type
                     ext = Path(filename).suffix.lower()
                     if self.supported_attachment_types and ext not in self.supported_attachment_types:
-                        logger.debug(f"Skipping unsupported attachment type: {filename}")
-                        continue
+                        # If no extension, try to extract anyway
+                        if ext:
+                            logger.debug(f"Skipping unsupported attachment type: {filename}")
+                            continue
 
                     # Read content
-                    content = att.read_buffer(size) if hasattr(att, 'read_buffer') else b""
+                    content = b""
+                    if hasattr(att, 'read_buffer') and size > 0:
+                        try:
+                            content = att.read_buffer(size)
+                        except Exception as e:
+                            logger.debug(f"read_buffer failed: {e}")
+
+                    if not content:
+                        logger.debug(f"Could not read attachment content: {filename}")
+                        continue
+
+                    # Update size from actual content
+                    size = len(content)
 
                     attachment = Attachment(
                         filename=filename,
-                        content_type=getattr(att, 'content_type', 'application/octet-stream'),
+                        content_type=self._guess_content_type(filename),
                         size=size,
                         content=content
                     )
 
                     # Save if output directory specified
                     if self.attachment_output_dir:
-                        attachment.save(self.attachment_output_dir)
+                        try:
+                            attachment.save(self.attachment_output_dir)
+                            logger.info(f"Saved attachment: {filename} ({size} bytes)")
+                        except Exception as e:
+                            logger.warning(f"Failed to save attachment {filename}: {e}")
 
                     attachments.append(attachment)
                     self.stats["total_attachments"] += 1
 
                 except Exception as e:
-                    logger.warning(f"Error extracting attachment {i}: {e}")
+                    logger.debug(f"Error extracting attachment {i}: {e}")
 
         except Exception as e:
-            logger.warning(f"Error accessing attachments: {e}")
+            logger.debug(f"Error accessing attachments: {e}")
 
         return attachments
+
+    def _get_attachment_filename(self, attachment, index: int) -> str:
+        """Extract filename from attachment record sets"""
+        # MAPI property IDs for attachment filename
+        # 12289 = PR_ATTACH_FILENAME (short filename)
+        # 14084 = PR_ATTACH_LONG_FILENAME
+        # 14085 = PR_DISPLAY_NAME
+        filename_props = [14084, 12289, 14085]
+
+        try:
+            for rs_idx in range(attachment.number_of_record_sets):
+                record_set = attachment.get_record_set(rs_idx)
+
+                for entry_idx in range(record_set.number_of_entries):
+                    try:
+                        entry = record_set.get_entry(entry_idx)
+                        entry_type = entry.entry_type
+
+                        if entry_type in filename_props:
+                            if hasattr(entry, 'get_data_as_string'):
+                                filename = entry.get_data_as_string()
+                                if filename:
+                                    return filename
+                    except:
+                        continue
+
+        except Exception as e:
+            logger.debug(f"Error getting attachment filename: {e}")
+
+        return f"attachment_{index}"
+
+    def _guess_content_type(self, filename: str) -> str:
+        """Guess content type from filename extension"""
+        ext = Path(filename).suffix.lower()
+        content_types = {
+            '.pdf': 'application/pdf',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.doc': 'application/msword',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.xls': 'application/vnd.ms-excel',
+            '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            '.ppt': 'application/vnd.ms-powerpoint',
+            '.txt': 'text/plain',
+            '.csv': 'text/csv',
+            '.html': 'text/html',
+            '.htm': 'text/html',
+            '.rtf': 'application/rtf',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+        }
+        return content_types.get(ext, 'application/octet-stream')
 
     def _parse_importance(self, message) -> str:
         """Parse message importance/priority"""
@@ -545,17 +792,57 @@ class PSTExtractor:
         folder_path: str
     ) -> EmailMessage:
         """Convert standard email.message to EmailMessage"""
-        # Generate ID
-        message_id = msg.get('Message-ID', '') or hashlib.md5(
+        # Parse Message-ID
+        header_message_id = msg.get('Message-ID', '')
+        if header_message_id:
+            header_message_id = header_message_id.strip().strip("<>")
+
+        # Generate internal ID
+        message_id = hashlib.md5(
             f"{pst_path}:{msg.get('Subject', '')}:{msg.get('Date', '')}".encode()
         ).hexdigest()
 
-        # Parse sender
-        sender = msg.get('From', '')
-        sender_email = ""
-        if '<' in sender:
-            sender_email = sender.split('<')[1].rstrip('>')
-            sender = sender.split('<')[0].strip()
+        # Parse sender using email.utils
+        from_header = msg.get('From', '')
+        sender_name, sender_email = parseaddr(from_header)
+        sender_email = sender_email.lower() if sender_email else ""
+
+        # Parse structured recipients
+        to_header = msg.get('To', '')
+        recipients_to = [
+            {"name": name.strip(), "email": addr.lower()}
+            for name, addr in getaddresses([to_header])
+            if addr
+        ] if to_header else []
+
+        cc_header = msg.get('Cc', '')
+        recipients_cc = [
+            {"name": name.strip(), "email": addr.lower()}
+            for name, addr in getaddresses([cc_header])
+            if addr
+        ] if cc_header else []
+
+        # Parse In-Reply-To
+        in_reply_to = msg.get('In-Reply-To', '')
+        if in_reply_to:
+            in_reply_to = in_reply_to.strip().strip("<>")
+
+        # Parse References
+        refs_header = msg.get('References', '')
+        references = [
+            r.strip().strip("<>") for r in refs_header.split() if r.strip()
+        ] if refs_header else []
+
+        # Return-Path
+        return_path_header = msg.get('Return-Path', '')
+        return_path = None
+        if return_path_header:
+            _, rp_addr = parseaddr(return_path_header)
+            return_path = rp_addr.lower() if rp_addr else None
+
+        # X-Originating-IP
+        x_ip = msg.get('X-Originating-IP', '')
+        x_originating_ip = x_ip.strip().strip("[]") if x_ip else None
 
         # Parse date
         sent_time = None
@@ -591,15 +878,19 @@ class PSTExtractor:
             source_pst=pst_path,
             folder_path=folder_path,
             subject=msg.get('Subject', ''),
-            sender=sender,
+            sender=sender_name or sender_email,
             sender_email=sender_email,
-            recipients_to=[r.strip() for r in msg.get('To', '').split(',') if r.strip()],
-            recipients_cc=[r.strip() for r in msg.get('Cc', '').split(',') if r.strip()],
+            recipients_to=recipients_to,
+            recipients_cc=recipients_cc,
             sent_time=sent_time,
             body_text=body_text,
             body_html=body_html,
             conversation_id=msg.get('Thread-Index'),
-            in_reply_to=msg.get('In-Reply-To'),
+            in_reply_to=in_reply_to or None,
+            references=references,
+            header_message_id=header_message_id or None,
+            return_path=return_path,
+            x_originating_ip=x_originating_ip,
         )
 
     def get_stats(self) -> Dict[str, int]:

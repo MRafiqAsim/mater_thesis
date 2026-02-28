@@ -329,6 +329,93 @@ class ThreadAwareProcessor:
         self.stats["kg_entities_extracted"] += len(entity_dicts)
         return entity_dicts, entities
 
+    def _get_person_pseudonym(self, name: str) -> str:
+        """
+        Get a pseudonym for a person name.
+
+        Lookup order:
+        1. Identity registry — known email senders/recipients (exact + fuzzy)
+        2. Anonymizer's value mapping — consistent within processing run
+        3. Anonymizer pass — generates new PERSON_N and caches it
+
+        Known people (registry) get stable pseudonyms tied to their email.
+        NER-only names get consistent pseudonyms via the anonymizer's
+        _value_mapping (same text → same pseudonym within a run).
+        """
+        # 1. Identity registry (email-based, stable across runs)
+        if self.identity_registry:
+            pseudonym = self.identity_registry.get_pseudonym(name)
+            if pseudonym:
+                return pseudonym
+
+        # 2. Anonymizer's existing mapping (consistent within run)
+        mapped = self.anonymizer._value_mapping.get(name, "")
+        if mapped:
+            return mapped.strip("[]")
+
+        # 3. Run anonymizer — detects as PERSON PII, generates & caches pseudonym
+        anon_result = self.anonymizer.anonymize(name, "en")
+        if anon_result.anonymized_text != name:
+            return anon_result.anonymized_text.strip("[]")
+
+        # 4. Anonymizer didn't detect it as PII — force a consistent pseudonym
+        if not hasattr(self, "_ner_person_counter"):
+            self._ner_person_counter = 900  # high offset to avoid collision
+        self._ner_person_counter += 1
+        pseudonym = f"PERSON_{self._ner_person_counter:03d}"
+        self.anonymizer._value_mapping[name] = f"[{pseudonym}]"
+        return pseudonym
+
+    def _anonymize_kg_entities(self, entity_dicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Replace PERSON entity text with pseudonyms in KG entity dicts.
+
+        All PERSON entities are anonymized regardless of is_pii flag,
+        since person names in the knowledge graph are always PII.
+        """
+        anonymized = []
+        for e in entity_dicts:
+            e_copy = dict(e)
+            if e_copy.get("type") == "PERSON":
+                text = e_copy["text"]
+                pseudonym = self._get_person_pseudonym(text)
+                e_copy["text"] = pseudonym
+                e_copy["original_text"] = text
+            anonymized.append(e_copy)
+        return anonymized
+
+    def _anonymize_kg_relationships(self, rel_dicts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Replace PERSON source/target names with pseudonyms in KG relationship dicts.
+        """
+        anonymized = []
+        for r in rel_dicts:
+            r_copy = dict(r)
+            for role in ("source", "target"):
+                name = r_copy.get(role, "")
+                role_type = r_copy.get(f"{role}_type", "")
+                if role_type in ("PERSON", "person") and name:
+                    r_copy[role] = self._get_person_pseudonym(name)
+            anonymized.append(r_copy)
+        return anonymized
+
+    def _anonymize_participants(self, participants: List[str]) -> List[str]:
+        """
+        Anonymize a list of participant names using identity registry.
+        """
+        result = []
+        for p in participants:
+            pseudonym = None
+            if self.identity_registry:
+                pseudonym = self.identity_registry.get_pseudonym(p)
+            if pseudonym:
+                result.append(pseudonym)
+            else:
+                # Fall back to full anonymizer (handles emails, etc.)
+                anon = self.anonymizer.anonymize(p, "en")
+                result.append(anon.anonymized_text)
+        return result
+
     def _extract_kg_relationships(
         self,
         text: str,
@@ -422,6 +509,11 @@ class ThreadAwareProcessor:
                 # Extract relationships
                 kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
 
+                # Anonymize KG metadata
+                anon_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
+                anon_kg_rels = self._anonymize_kg_relationships(kg_relationships)
+                anon_participants = self._anonymize_participants(participants[:10])
+
                 thread_chunk = ThreadChunk(
                     chunk_id=f"att_{att_content.attachment_id}_{chunk.chunk_index}",
                     thread_id=thread_id,
@@ -430,13 +522,13 @@ class ThreadAwareProcessor:
                     text_anonymized=anon_result.anonymized_text,
                     token_count=chunk.token_count,
                     thread_subject=subject,
-                    thread_participants=participants[:10],
+                    thread_participants=anon_participants,
                     thread_email_count=email_count,
                     email_position="attachment",
                     pii_entities=[e.to_dict() for e in anon_result.entities],
                     pii_count=anon_result.entity_count,
-                    kg_entities=kg_entity_dicts,
-                    kg_relationships=kg_relationships,
+                    kg_entities=anon_kg_entities,
+                    kg_relationships=anon_kg_rels,
                     has_attachments=True,
                     attachment_count=1,
                     attachment_filenames=[att_content.filename],
@@ -582,6 +674,11 @@ class ThreadAwareProcessor:
             # Extract relationships between entities (for PathRAG)
             kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
 
+            # Anonymize KG metadata (entities, relationships, participants)
+            anon_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
+            anon_kg_rels = self._anonymize_kg_relationships(kg_relationships)
+            anon_participants = self._anonymize_participants(thread.participants[:10])
+
             # Create thread chunk (source_type="email")
             thread_chunk = ThreadChunk(
                 chunk_id=f"{thread.conversation_id}_{chunk.chunk_index}",
@@ -591,13 +688,13 @@ class ThreadAwareProcessor:
                 text_anonymized=anon_result.anonymized_text,
                 token_count=chunk.token_count,
                 thread_subject=thread.subject,
-                thread_participants=thread.participants[:10],
+                thread_participants=anon_participants,
                 thread_email_count=thread.email_count,
                 email_position=f"thread_{thread.email_count}_emails",
                 pii_entities=[e.to_dict() for e in anon_result.entities],
                 pii_count=anon_result.entity_count,
-                kg_entities=kg_entity_dicts,
-                kg_relationships=kg_relationships,
+                kg_entities=anon_kg_entities,
+                kg_relationships=anon_kg_rels,
                 has_attachments=has_attachments,
                 attachment_count=total_attachments,
                 attachment_filenames=all_attachment_filenames,
@@ -683,6 +780,11 @@ class ThreadAwareProcessor:
             # Extract relationships between entities (for PathRAG)
             kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
 
+            # Anonymize KG metadata
+            anon_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
+            anon_kg_rels = self._anonymize_kg_relationships(kg_relationships)
+            anon_participants = self._anonymize_participants(thread.participants[:10])
+
             # Create chunk (source_type="email", stored in individual_chunks)
             thread_chunk = ThreadChunk(
                 chunk_id=f"{email.get('message_id', 'unknown')}_{chunk.chunk_index}",
@@ -692,13 +794,13 @@ class ThreadAwareProcessor:
                 text_anonymized=anon_result.anonymized_text,
                 token_count=chunk.token_count,
                 thread_subject=thread.subject,
-                thread_participants=thread.participants[:10],
+                thread_participants=anon_participants,
                 thread_email_count=1,
                 email_position="1/1",
                 pii_entities=[e.to_dict() for e in anon_result.entities],
                 pii_count=anon_result.entity_count,
-                kg_entities=kg_entity_dicts,
-                kg_relationships=kg_relationships,
+                kg_entities=anon_kg_entities,
+                kg_relationships=anon_kg_rels,
                 has_attachments=has_attachments,
                 attachment_count=attachment_count,
                 attachment_filenames=attachment_filenames,

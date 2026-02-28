@@ -110,9 +110,15 @@ class SimpleRAGPipeline:
     async def run_silver(self) -> dict:
         """
         Run Silver layer: all 3 stages (chunks → anonymize → summarize).
+        Or combined mode if PROCESS_ANONYMIZATION_SUMMARIZATION_TOGETHER=true.
         """
         logger.info("=" * 60)
-        logger.info("SILVER LAYER: Chunks, Anonymization, Summarization")
+        if self.config.process_anonymization_summarization_together:
+            logger.info("SILVER LAYER: Chunks → per-record Anonymize + Summarize")
+        else:
+            logger.info("SILVER LAYER: Chunks → Anonymization → Summarization (3 batch stages)")
+        threshold = self.config.process_threshold
+        logger.info(f"Process threshold: {'unlimited' if threshold < 0 else threshold}")
         logger.info("=" * 60)
 
         start = datetime.now()

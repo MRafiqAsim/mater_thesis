@@ -77,6 +77,7 @@ class OpenAIPIIDetector:
 
     Uses GPT models to identify PII with high accuracy,
     especially for context-dependent and ambiguous cases.
+    Supports both OpenAI and Azure OpenAI endpoints.
     """
 
     def __init__(
@@ -84,26 +85,47 @@ class OpenAIPIIDetector:
         api_key: Optional[str] = None,
         model: str = "gpt-4o",
         temperature: float = 0.0,
-        confidence_threshold: float = 0.5
+        confidence_threshold: float = 0.5,
+        use_azure: bool = False,
+        azure_endpoint: Optional[str] = None,
+        azure_api_version: str = "2024-12-01-preview",
+        azure_deployment: Optional[str] = None,
+        identity_registry=None,
     ):
         """
         Initialize OpenAI PII Detector.
 
         Args:
-            api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
+            api_key: OpenAI/Azure API key
             model: Model to use (default: gpt-4o)
             temperature: Temperature for generation (default: 0.0 for deterministic)
             confidence_threshold: Minimum confidence to include entity
+            use_azure: Whether to use Azure OpenAI instead of OpenAI
+            azure_endpoint: Azure OpenAI endpoint URL
+            azure_api_version: Azure API version
+            azure_deployment: Azure deployment name (used as model for Azure)
+            identity_registry: Optional IdentityRegistry for known-person context
         """
-        self.model = model
         self.temperature = temperature
         self.confidence_threshold = confidence_threshold
+        self.identity_registry = identity_registry
+        self.use_azure = use_azure
 
-        # Initialize OpenAI client
         try:
-            from openai import OpenAI
-            self.client = OpenAI(api_key=api_key)
-            logger.info(f"OpenAI PII Detector initialized with model: {model}")
+            if use_azure:
+                from openai import AzureOpenAI
+                self.model = azure_deployment or model
+                self.client = AzureOpenAI(
+                    api_key=api_key,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version,
+                )
+                logger.info(f"Azure OpenAI PII Detector initialized: {azure_endpoint}, deployment={self.model}")
+            else:
+                from openai import OpenAI
+                self.model = model
+                self.client = OpenAI(api_key=api_key)
+                logger.info(f"OpenAI PII Detector initialized with model: {model}")
         except ImportError:
             raise ImportError("OpenAI package not installed. Run: pip install openai")
 
@@ -126,11 +148,21 @@ class OpenAIPIIDetector:
             return []
 
         try:
+            # Build system prompt with optional identity context
+            system_prompt = PII_DETECTION_SYSTEM_PROMPT
+            if self.identity_registry and self.identity_registry.identity_count > 0:
+                known_names = sorted(self.identity_registry.get_all_known_names())[:50]
+                system_prompt += (
+                    "\n\nKNOWN PEOPLE in this corpus (use for consistent detection):\n"
+                    + ", ".join(known_names)
+                    + "\n\nIf you see these names or variations, mark them as PERSON with high confidence."
+                )
+
             # Call OpenAI API
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": PII_DETECTION_SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": PII_DETECTION_USER_PROMPT.format(text=text)}
                 ],
                 temperature=self.temperature,
@@ -253,29 +285,47 @@ class OpenAIAnonymizer:
     Anonymizer using OpenAI API.
 
     Can generate realistic synthetic replacements for PII.
+    Supports both OpenAI and Azure OpenAI endpoints.
     """
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         model: str = "gpt-4o",
-        generate_synthetic: bool = True
+        generate_synthetic: bool = True,
+        use_azure: bool = False,
+        azure_endpoint: Optional[str] = None,
+        azure_api_version: str = "2024-12-01-preview",
+        azure_deployment: Optional[str] = None,
     ):
         """
         Initialize OpenAI Anonymizer.
 
         Args:
-            api_key: OpenAI API key
+            api_key: OpenAI/Azure API key
             model: Model to use
             generate_synthetic: Generate realistic replacements
+            use_azure: Whether to use Azure OpenAI
+            azure_endpoint: Azure OpenAI endpoint URL
+            azure_api_version: Azure API version
+            azure_deployment: Azure deployment name
         """
-        self.model = model
         self.generate_synthetic = generate_synthetic
         self._replacement_cache: Dict[str, str] = {}
 
         try:
-            from openai import OpenAI
-            self.client = OpenAI(api_key=api_key)
+            if use_azure:
+                from openai import AzureOpenAI
+                self.model = azure_deployment or model
+                self.client = AzureOpenAI(
+                    api_key=api_key,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version,
+                )
+            else:
+                from openai import OpenAI
+                self.model = model
+                self.client = OpenAI(api_key=api_key)
         except ImportError:
             raise ImportError("OpenAI package not installed. Run: pip install openai")
 

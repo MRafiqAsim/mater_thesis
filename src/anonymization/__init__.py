@@ -8,6 +8,7 @@
 
 from .pii_detector import PIIDetector, PIIEntity, PIIType
 from .anonymizer import Anonymizer, AnonymizationResult
+from .identity_registry import IdentityRegistry, Identity
 from .silver_processor import SilverLayerProcessor
 from .privacy_metrics import (
     PrivacyMetricsCalculator,
@@ -46,6 +47,9 @@ __all__ = [
     # Anonymization (Local)
     "Anonymizer",
     "AnonymizationResult",
+    # Identity Registry
+    "IdentityRegistry",
+    "Identity",
     # Silver Layer Processing
     "SilverLayerProcessor",
     # Privacy Metrics

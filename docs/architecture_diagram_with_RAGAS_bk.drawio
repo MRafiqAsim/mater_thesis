@@ -1,0 +1,639 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.3.6 Chrome/140.0.7339.249 Electron/38.8.0 Safari/537.36" version="29.3.6">
+  <diagram id="medallion-architecture" name="Full Architecture">
+    <mxGraphModel dx="1234" dy="818" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1890" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;fontColor=#1a1a1a;" value="GraphRAG vs PathRAG — Comparative Knowledge Retrieval System" vertex="1">
+          <mxGeometry height="40" width="700" x="350" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=13;fontColor=#666666;" value="KU Leuven Master Thesis — Muhammad Rafiq | Medallion Architecture on Azure | RAGAS Comparative Evaluation" vertex="1">
+          <mxGeometry height="25" width="800" x="300" y="55" as="geometry" />
+        </mxCell>
+        <mxCell id="sources-group" parent="1" style="swimlane;fontStyle=1;childLayout=stackLayout;horizontal=1;startSize=30;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=0;marginBottom=0;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;swimlaneFillColor=#fafafa;" value="DATA SOURCES" vertex="1">
+          <mxGeometry height="200" width="160" x="40" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="pst-icon" parent="sources-group" style="text;strokeColor=#d6b656;fillColor=#fff2cc;align=center;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rounded=1;fontSize=12;" value="📧 PST Files" vertex="1">
+          <mxGeometry height="30" width="160" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="pdf-icon" parent="sources-group" style="text;strokeColor=#d6b656;fillColor=#fff2cc;align=center;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rounded=1;fontSize=12;" value="📄 PDF Documents" vertex="1">
+          <mxGeometry height="30" width="160" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="docx-icon" parent="sources-group" style="text;strokeColor=#d6b656;fillColor=#fff2cc;align=center;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rounded=1;fontSize=12;" value="📝 DOCX Files" vertex="1">
+          <mxGeometry height="30" width="160" y="90" as="geometry" />
+        </mxCell>
+        <mxCell id="xlsx-icon" parent="sources-group" style="text;strokeColor=#d6b656;fillColor=#fff2cc;align=center;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rounded=1;fontSize=12;" value="📊 XLSX Spreadsheets" vertex="1">
+          <mxGeometry height="30" width="160" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="pptx-icon" parent="sources-group" style="text;strokeColor=#d6b656;fillColor=#fff2cc;align=center;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rounded=1;fontSize=12;" value="📽️ PPTX Presentations" vertex="1">
+          <mxGeometry height="30" width="160" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="msg-icon" parent="sources-group" style="text;strokeColor=#d6b656;fillColor=#fff2cc;align=center;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rounded=1;fontSize=12;" value="✉️ MSG Emails" vertex="1">
+          <mxGeometry height="30" width="160" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-layer" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CD7F32;strokeColor=#8B4513;opacity=20;" value="" vertex="1">
+          <mxGeometry height="380" width="200" x="230" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#8B4513;" value="🥉 BRONZE LAYER" vertex="1">
+          <mxGeometry height="30" width="200" x="230" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-subtitle" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#666666;" value="Raw Data (As-Is)" vertex="1">
+          <mxGeometry height="20" width="200" x="230" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-emails" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" value="📧 bronze/emails/" vertex="1">
+          <mxGeometry height="35" width="160" x="250" y="160" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-docs" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" value="📄 bronze/documents/" vertex="1">
+          <mxGeometry height="35" width="160" x="250" y="205" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-attach" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" value="📎 bronze/attachments/" vertex="1">
+          <mxGeometry height="35" width="160" x="250" y="250" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-meta" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" value="📋 bronze/metadata/" vertex="1">
+          <mxGeometry height="35" width="160" x="250" y="295" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-process" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;align=left;spacingLeft=10;" value="Phase 1: Ingestion&#xa;• PST extraction&#xa;• Document parsing&#xa;• Language detection" vertex="1">
+          <mxGeometry height="70" width="160" x="250" y="345" as="geometry" />
+        </mxCell>
+        <mxCell id="bronze-tech" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;fontStyle=2;" value="Delta Lake + ADLS Gen2" vertex="1">
+          <mxGeometry height="20" width="160" x="250" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-layer" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C0C0C0;strokeColor=#808080;opacity=20;" value="" vertex="1">
+          <mxGeometry height="380" width="200" x="460" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#606060;" value="🥈 SILVER LAYER" vertex="1">
+          <mxGeometry height="30" width="200" x="460" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-subtitle" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#666666;" value="Cleaned &amp; Enriched" vertex="1">
+          <mxGeometry height="20" width="200" x="460" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-chunks" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" value="📦 silver/chunks/" vertex="1">
+          <mxGeometry height="30" width="160" x="480" y="160" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-anon" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" value="🔒 silver/chunks_anonymized/" vertex="1">
+          <mxGeometry height="30" width="160" x="480" y="195" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-ner" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" value="🏷️ silver/ner_results/" vertex="1">
+          <mxGeometry height="30" width="160" x="480" y="230" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-summaries" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" value="📝 silver/summaries/" vertex="1">
+          <mxGeometry height="30" width="160" x="480" y="265" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-entities" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" value="👤 silver/entities_raw/" vertex="1">
+          <mxGeometry height="30" width="160" x="480" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-process" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;align=left;spacingLeft=10;" value="Phase 2: NLP Processing&#xa;• Semantic chunking&#xa;• NER (EN/NL)&#xa;• PII anonymization&#xa;• Summarization" vertex="1">
+          <mxGeometry height="70" width="160" x="480" y="345" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-tech" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;fontStyle=2;" value="spaCy + Presidio + GPT-4o" vertex="1">
+          <mxGeometry height="20" width="160" x="480" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-layer" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFD700;strokeColor=#B8860B;opacity=20;" value="" vertex="1">
+          <mxGeometry height="380" width="250" x="690" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#B8860B;" value="🥇 GOLD LAYER" vertex="1">
+          <mxGeometry height="30" width="250" x="690" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-subtitle" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontColor=#666666;" value="Business-Ready" vertex="1">
+          <mxGeometry height="20" width="250" x="690" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-shared-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=3;fontColor=#666666;" value="Shared Indexes" vertex="1">
+          <mxGeometry height="15" width="210" x="710" y="153" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-entities" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" value="👤 gold/entities/" vertex="1">
+          <mxGeometry height="22" width="100" x="710" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-rels" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" value="🔗 gold/relationships/" vertex="1">
+          <mxGeometry height="22" width="110" x="815" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-embedded" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" value="🔢 gold/chunks_embedded/" vertex="1">
+          <mxGeometry height="22" width="215" x="710" y="196" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-graphrag-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=3;fontColor=#d79b00;" value="GraphRAG Indexes" vertex="1">
+          <mxGeometry height="15" width="210" x="710" y="224" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-communities" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" value="🏘️ gold/communities/" vertex="1">
+          <mxGeometry height="22" width="100" x="710" y="241" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-comm-sum" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" value="📋 gold/community_summaries/" vertex="1">
+          <mxGeometry height="22" width="110" x="815" y="241" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-pathrag-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=3;fontColor=#6C3483;" value="PathRAG Indexes" vertex="1">
+          <mxGeometry height="15" width="210" x="710" y="269" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-path-index" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8DAEF;strokeColor=#6C3483;fontSize=10;" value="🛤️ gold/path_index/" vertex="1">
+          <mxGeometry height="22" width="100" x="710" y="286" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-path-stats" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8DAEF;strokeColor=#6C3483;fontSize=10;" value="📊 gold/path_statistics/" vertex="1">
+          <mxGeometry height="22" width="110" x="815" y="286" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-eval" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" value="📊 gold/evaluation_results/" vertex="1">
+          <mxGeometry height="22" width="215" x="710" y="316" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-process" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;align=left;spacingLeft=10;" value="Phase 3-4: Index + Graph&#xa;• Vector embeddings (HNSW)&#xa;• Knowledge graph (NetworkX)&#xa;• Communities (Leiden)&#xa;• Path index (DFS pre-compute)" vertex="1">
+          <mxGeometry height="80" width="215" x="710" y="348" as="geometry" />
+        </mxCell>
+        <mxCell id="gold-tech" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;fontStyle=2;" value="text-embedding-3-large + Leiden + NetworkX" vertex="1">
+          <mxGeometry height="20" width="215" x="710" y="432" as="geometry" />
+        </mxCell>
+        <mxCell id="azure-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;opacity=30;" value="" vertex="1">
+          <mxGeometry height="380" width="220" x="970" y="100" as="geometry" />
+        </mxCell>
+        <mxCell id="azure-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#1a73e8;" value="☁️ AZURE SERVICES" vertex="1">
+          <mxGeometry height="30" width="220" x="970" y="105" as="geometry" />
+        </mxCell>
+        <mxCell id="azure-openai" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#1a73e8;fontSize=11;" value="🤖 Azure OpenAI&#xa;GPT-4o&#xa;text-embedding-3-large" vertex="1">
+          <mxGeometry height="55" width="180" x="990" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="azure-search" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#1a73e8;fontSize=11;" value="🔍 Azure AI Search&#xa;HNSW Vector Index&#xa;Hybrid Search (BM25+Vector)" vertex="1">
+          <mxGeometry height="55" width="180" x="990" y="210" as="geometry" />
+        </mxCell>
+        <mxCell id="azure-cosmos" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#1a73e8;fontSize=11;" value="🌐 Azure Cosmos DB&#xa;Gremlin API&#xa;Knowledge Graph Storage" vertex="1">
+          <mxGeometry height="55" width="180" x="990" y="275" as="geometry" />
+        </mxCell>
+        <mxCell id="azure-databricks" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#1a73e8;fontSize=11;" value="⚡ Azure Databricks&#xa;Spark Processing&#xa;Notebook Execution" vertex="1">
+          <mxGeometry height="55" width="180" x="990" y="340" as="geometry" />
+        </mxCell>
+        <mxCell id="azure-storage" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#1a73e8;fontSize=11;" value="💾 ADLS Gen2&#xa;Delta Lake Storage" vertex="1">
+          <mxGeometry height="40" width="180" x="990" y="405" as="geometry" />
+        </mxCell>
+        <mxCell id="query-input" parent="1" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#333333;fontSize=14;fontStyle=1;" value="❓ User Query" vertex="1">
+          <mxGeometry height="40" width="160" x="530" y="510" as="geometry" />
+        </mxCell>
+        <mxCell id="strategy-selector" parent="1" style="shape=hexagon;perimeter=hexagonPerimeter2;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;fontStyle=1;size=15;" value="⚙️ Strategy Selector&#xa;(One strategy per run)" vertex="1">
+          <mxGeometry height="50" width="220" x="500" y="575" as="geometry" />
+        </mxCell>
+        <mxCell id="or-label" parent="1" style="text;html=1;strokeColor=none;fillColor=#fff2cc;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=1;fontSize=18;fontStyle=1;fontColor=#d79b00;" value="OR" vertex="1">
+          <mxGeometry height="30" width="50" x="585" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-q-to-ss" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#333333;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="610" y="550" as="sourcePoint" />
+            <mxPoint x="610" y="575" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-ss-to-graphrag" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#d79b00;fontColor=#d79b00;fontSize=10;" value="Strategy A">
+          <mxGeometry height="50" relative="1" width="50" x="-0.3" y="10" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="380" y="600" />
+              <mxPoint x="260" y="640" />
+            </Array>
+            <mxPoint x="500" y="600" as="sourcePoint" />
+            <mxPoint x="260" y="660" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-ss-to-pathrag" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#6C3483;fontColor=#6C3483;fontSize=10;" value="Strategy B">
+          <mxGeometry height="50" relative="1" width="50" x="-0.3" y="-10" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="840" y="600" />
+              <mxPoint x="960" y="640" />
+            </Array>
+            <mxPoint x="720" y="600" as="sourcePoint" />
+            <mxPoint x="960" y="660" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="graphrag-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;opacity=30;" value="" vertex="1">
+          <mxGeometry height="240" width="530" x="40" y="650" as="geometry" />
+        </mxCell>
+        <mxCell id="graphrag-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;fontColor=#d79b00;" value="🔎 STRATEGY A: GraphRAG Retrieval" vertex="1">
+          <mxGeometry height="25" width="530" x="40" y="655" as="geometry" />
+        </mxCell>
+        <mxCell id="query-class" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#d79b00;fontSize=11;" value="Query Classifier&#xa;LOCAL | GLOBAL | HYBRID" vertex="1">
+          <mxGeometry height="45" width="140" x="60" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="vector-search-g" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" value="🔢 Vector Search&#xa;Azure AI Search&#xa;Semantic similarity" vertex="1">
+          <mxGeometry height="55" width="100" x="220" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="graph-search" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" value="🔗 Graph Search&#xa;Entity lookup&#xa;Relationship query" vertex="1">
+          <mxGeometry height="55" width="100" x="330" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="community-search" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" value="🏘️ Community Search&#xa;Theme summaries&#xa;Global context" vertex="1">
+          <mxGeometry height="55" width="110" x="440" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="context-builder-g" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" value="📋 Context Builder — Combine + rank + deduplicate" vertex="1">
+          <mxGeometry height="30" width="330" x="220" y="760" as="geometry" />
+        </mxCell>
+        <mxCell id="graphrag-llm" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#d79b00;fontSize=10;" value="🧠 GPT-4o: Generate answer from community summaries + entity context" vertex="1">
+          <mxGeometry height="30" width="490" x="60" y="800" as="geometry" />
+        </mxCell>
+        <mxCell id="graphrag-output" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;fontStyle=1;" value="GraphRAG Result&#xa;answer + chunks + entities + community_summaries + sources" vertex="1">
+          <mxGeometry height="35" width="490" x="60" y="845" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-gc1" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="200" y="712" as="sourcePoint" />
+            <mxPoint x="220" y="712" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-gc2" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="380" y="745" as="sourcePoint" />
+            <mxPoint x="380" y="760" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-gc3" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="380" y="790" as="sourcePoint" />
+            <mxPoint x="380" y="800" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="pathrag-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8DAEF;strokeColor=#6C3483;opacity=30;" value="" vertex="1">
+          <mxGeometry height="240" width="540" x="650" y="650" as="geometry" />
+        </mxCell>
+        <mxCell id="pathrag-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;fontColor=#6C3483;" value="🛤️ STRATEGY B: PathRAG Retrieval" vertex="1">
+          <mxGeometry height="25" width="540" x="650" y="655" as="geometry" />
+        </mxCell>
+        <mxCell id="keyword-extract" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#6C3483;fontSize=10;" value="🔑 Keyword Extraction&#xa;High-level + Low-level&#xa;(LLM-based)" vertex="1">
+          <mxGeometry height="55" width="120" x="670" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="entity-seed" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" value="🎯 Entity Seed&#xa;Vector similarity&#xa;top-k=40 entities" vertex="1">
+          <mxGeometry height="55" width="110" x="800" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="dfs-path" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8DAEF;strokeColor=#6C3483;fontSize=10;" value="🔍 DFS Path Finding&#xa;1-hop, 2-hop, 3-hop&#xa;between seed entities" vertex="1">
+          <mxGeometry height="55" width="120" x="920" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="bfs-prune" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8DAEF;strokeColor=#6C3483;fontSize=10;" value="✂️ BFS Flow Pruning&#xa;alpha=0.8, threshold=0.3&#xa;weighted path scoring" vertex="1">
+          <mxGeometry height="55" width="120" x="1050" y="690" as="geometry" />
+        </mxCell>
+        <mxCell id="path-context" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" value="📋 Path Context Builder — Top-15 paths → natural language descriptions" vertex="1">
+          <mxGeometry height="30" width="370" x="800" y="760" as="geometry" />
+        </mxCell>
+        <mxCell id="pathrag-llm" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#6C3483;fontSize=10;" value="🧠 GPT-4o: Generate answer from path context + entity descriptions + source chunks" vertex="1">
+          <mxGeometry height="30" width="500" x="670" y="800" as="geometry" />
+        </mxCell>
+        <mxCell id="pathrag-output" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8DAEF;strokeColor=#6C3483;fontSize=11;fontStyle=1;" value="PathRAG Result&#xa;answer + paths + entities + evidence_chunks + sources" vertex="1">
+          <mxGeometry height="35" width="500" x="670" y="845" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-pc1" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="790" y="712" as="sourcePoint" />
+            <mxPoint x="800" y="712" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-pc2" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="910" y="712" as="sourcePoint" />
+            <mxPoint x="920" y="712" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-pc3" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="1040" y="712" as="sourcePoint" />
+            <mxPoint x="1050" y="712" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-pc4" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="985" y="745" as="sourcePoint" />
+            <mxPoint x="985" y="760" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-pc5" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="985" y="790" as="sourcePoint" />
+            <mxPoint x="985" y="800" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="silver-eval-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;opacity=30;" value="" vertex="1">
+          <mxGeometry height="290" width="1150" x="40" y="920" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-eval-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;fontColor=#C62828;" value="🔒 SILVER LAYER QUALITY EVALUATION — GPT-4o Anonymization &amp; Summarization" vertex="1">
+          <mxGeometry height="25" width="1150" x="40" y="925" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-eval-input" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;fontStyle=1;" value="Silver Layer Outputs&#xa;chunks_anonymized/&#xa;summaries/&#xa;pii_mappings/" vertex="1">
+          <mxGeometry height="60" width="120" x="55" y="958" as="geometry" />
+        </mxCell>
+        <mxCell id="ground-truth" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;fontStyle=1;" value="📋 Manual Ground Truth&#xa;50-100 annotated emails&#xa;(PII labels + reference&#xa;summaries)" vertex="1">
+          <mxGeometry height="60" width="120" x="55" y="1030" as="geometry" />
+        </mxCell>
+        <mxCell id="anon-eval-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1;fontColor=#C62828;" value="PII Anonymization Evaluation (GPT-4o)" vertex="1">
+          <mxGeometry height="15" width="370" x="190" y="953" as="geometry" />
+        </mxCell>
+        <mxCell id="anon-metric-1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;" value="✓ PII Precision&#xa;Detected PII is&#xa;actually PII?" vertex="1">
+          <mxGeometry height="48" width="90" x="190" y="972" as="geometry" />
+        </mxCell>
+        <mxCell id="anon-metric-2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;" value="✓ PII Recall&#xa;All real PII&#xa;caught? (critical)" vertex="1">
+          <mxGeometry height="48" width="90" x="285" y="972" as="geometry" />
+        </mxCell>
+        <mxCell id="anon-metric-3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;" value="✓ PII F1-Score&#xa;Per entity type&#xa;PERSON, EMAIL..." vertex="1">
+          <mxGeometry height="48" width="90" x="380" y="972" as="geometry" />
+        </mxCell>
+        <mxCell id="anon-metric-4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;" value="✓ 3-Way Compare&#xa;Presidio vs GPT-4o&#xa;vs Hybrid" vertex="1">
+          <mxGeometry height="48" width="90" x="475" y="972" as="geometry" />
+        </mxCell>
+        <mxCell id="anon-metric-5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=6;" value="🔍 Re-identification Risk&#xa;Can GPT-4o recover original&#xa;person from anonymized text?&#xa;→ Privacy leakage rate %" vertex="1">
+          <mxGeometry height="55" width="175" x="190" y="1030" as="geometry" />
+        </mxCell>
+        <mxCell id="anon-metric-6" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=6;" value="📊 Utility Preservation&#xa;RAG on original vs anonymized&#xa;→ Cosine similarity + context&#xa;recall comparison" vertex="1">
+          <mxGeometry height="55" width="175" x="375" y="1030" as="geometry" />
+        </mxCell>
+        <mxCell id="anon-eval-tech" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;fontStyle=2;" value="Presidio + spaCy + GPT-4o + manual annotation" vertex="1">
+          <mxGeometry height="15" width="360" x="190" y="1090" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-eval-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1;fontColor=#C62828;" value="Summarization Quality Evaluation (GPT-4o)" vertex="1">
+          <mxGeometry height="15" width="370" x="590" y="953" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-ref-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontColor=#888888;fontStyle=2;" value="Reference-Based (need human summaries)" vertex="1">
+          <mxGeometry height="10" width="200" x="590" y="968" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-metric-1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;" value="✓ ROUGE-1/2/L&#xa;N-gram overlap&#xa;with reference" vertex="1">
+          <mxGeometry height="48" width="90" x="590" y="980" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-metric-2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;" value="✓ BLEU&#xa;N-gram precision&#xa;brevity penalty" vertex="1">
+          <mxGeometry height="48" width="90" x="685" y="980" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-metric-3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;" value="✓ BERTScore&#xa;Semantic similarity&#xa;(no ref needed)" vertex="1">
+          <mxGeometry height="48" width="90" x="780" y="980" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-llm-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=8;fontColor=#888888;fontStyle=2;" value="Reference-Free (LLM-as-Judge)" vertex="1">
+          <mxGeometry height="10" width="200" x="590" y="1030" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-metric-4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=6;" value="🧠 LLM-as-Judge&#xa;GPT-4o rubric scoring:&#xa;Faithfulness (1-5)&#xa;Coverage (1-5)&#xa;Conciseness (1-5)&#xa;Coherence (1-5)" vertex="1">
+          <mxGeometry height="65" width="135" x="590" y="1042" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-metric-5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=6;" value="📋 Factual Consistency&#xa;Extract claims from summary&#xa;→ verify each vs source text&#xa;→ consistency % score" vertex="1">
+          <mxGeometry height="65" width="135" x="735" y="1042" as="geometry" />
+        </mxCell>
+        <mxCell id="summ-eval-tech" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;fontStyle=2;" value="rouge-score + sacrebleu + bert-score + GPT-4o judge" vertex="1">
+          <mxGeometry height="15" width="280" x="590" y="1112" as="geometry" />
+        </mxCell>
+        <mxCell id="silver-eval-output" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=9;fontStyle=0;align=left;spacingLeft=8;" value="Silver Quality Report&#xa;• PII P/R/F1 per type + 3-way comparison&#xa;• Privacy leakage rate + utility preservation&#xa;• Summary ROUGE/BLEU/BERTScore&#xa;• LLM-judge scores + factual consistency" vertex="1">
+          <mxGeometry height="72" width="265" x="905" y="1042" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-se1" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#9673a6;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="175" y="988" as="sourcePoint" />
+            <mxPoint x="190" y="988" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-se1b" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#d6b656;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="175" y="1060" as="sourcePoint" />
+            <mxPoint x="190" y="1060" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-se2" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#C62828;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="870" y="1078" as="sourcePoint" />
+            <mxPoint x="905" y="1078" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-se3" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#C62828;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="550" y="1060" as="sourcePoint" />
+            <mxPoint x="590" y="1060" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-silver-to-silver-eval" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#9673a6;dashed=1;fontSize=9;fontColor=#9673a6;" value="Silver outputs">
+          <mxGeometry height="50" relative="1" width="50" x="0.1" y="10" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="560" y="480" />
+              <mxPoint x="20" y="480" />
+              <mxPoint x="20" y="985" />
+            </Array>
+            <mxPoint x="560" y="460" as="sourcePoint" />
+            <mxPoint x="115" y="958" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eval-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6ffcc;strokeColor=#82b366;opacity=30;" value="" vertex="1">
+          <mxGeometry height="140" width="1150" x="40" y="1230" as="geometry" />
+        </mxCell>
+        <mxCell id="eval-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;fontColor=#82b366;" value="📊 RAGAS RETRIEVAL EVALUATION — GraphRAG vs PathRAG" vertex="1">
+          <mxGeometry height="25" width="1150" x="40" y="1235" as="geometry" />
+        </mxCell>
+        <mxCell id="eval-input-g" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;fontStyle=1;" value="GraphRAG Results&#xa;(per query)" vertex="1">
+          <mxGeometry height="35" width="120" x="60" y="1268" as="geometry" />
+        </mxCell>
+        <mxCell id="eval-input-p" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8DAEF;strokeColor=#6C3483;fontSize=10;fontStyle=1;" value="PathRAG Results&#xa;(per query)" vertex="1">
+          <mxGeometry height="35" width="120" x="60" y="1310" as="geometry" />
+        </mxCell>
+        <mxCell id="metric-1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#82b366;fontSize=10;" value="✓ Faithfulness&#xa;Answer grounded&#xa;in context?" vertex="1">
+          <mxGeometry height="50" width="120" x="200" y="1270" as="geometry" />
+        </mxCell>
+        <mxCell id="metric-2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#82b366;fontSize=10;" value="✓ Answer Relevancy&#xa;Answer addresses&#xa;question?" vertex="1">
+          <mxGeometry height="50" width="120" x="330" y="1270" as="geometry" />
+        </mxCell>
+        <mxCell id="metric-3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#82b366;fontSize=10;" value="✓ Context Precision&#xa;Retrieved context&#xa;relevant?" vertex="1">
+          <mxGeometry height="50" width="120" x="460" y="1270" as="geometry" />
+        </mxCell>
+        <mxCell id="metric-4" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff;strokeColor=#82b366;fontSize=10;" value="✓ Context Recall&#xa;All needed info&#xa;retrieved?" vertex="1">
+          <mxGeometry height="50" width="120" x="590" y="1270" as="geometry" />
+        </mxCell>
+        <mxCell id="metrics-label" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=9;fontColor=#666666;fontStyle=2;" value="Same 4 RAGAS metrics applied to BOTH strategies on identical query set" vertex="1">
+          <mxGeometry height="15" width="510" x="200" y="1325" as="geometry" />
+        </mxCell>
+        <mxCell id="comparison" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" value="📈 Statistical Comparison&#xa;Paired t-tests&#xa;+ Cohen&#39;s d effect sizes" vertex="1">
+          <mxGeometry height="50" width="150" x="730" y="1270" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-eg" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#d79b00;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="180" y="1285" as="sourcePoint" />
+            <mxPoint x="200" y="1285" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-ep" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#6C3483;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="180" y="1305" as="sourcePoint" />
+            <mxPoint x="200" y="1305" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-m-to-c" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#82b366;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="710" y="1295" as="sourcePoint" />
+            <mxPoint x="730" y="1295" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-graphrag-to-eval" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#d79b00;dashed=1;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <Array as="points">
+              <mxPoint x="300" y="900" />
+              <mxPoint x="15" y="900" />
+              <mxPoint x="15" y="1285" />
+            </Array>
+            <mxPoint x="300" y="880" as="sourcePoint" />
+            <mxPoint x="120" y="1268" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-pathrag-to-eval" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#6C3483;dashed=1;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <Array as="points">
+              <mxPoint x="920" y="905" />
+              <mxPoint x="10" y="905" />
+              <mxPoint x="10" y="1327" />
+            </Array>
+            <mxPoint x="920" y="880" as="sourcePoint" />
+            <mxPoint x="120" y="1310" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="report-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;opacity=30;" value="" vertex="1">
+          <mxGeometry height="130" width="280" x="900" y="1235" as="geometry" />
+        </mxCell>
+        <mxCell id="report-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=1;fontColor=#b85450;" value="📑 FINAL THESIS REPORT" vertex="1">
+          <mxGeometry height="20" width="280" x="900" y="1240" as="geometry" />
+        </mxCell>
+        <mxCell id="report-silver" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=9;align=left;spacingLeft=8;" value="🔒 Silver Quality&#xa;• PII P/R/F1 per type&#xa;• ROUGE / BLEU / BERTScore" vertex="1">
+          <mxGeometry height="50" width="130" x="910" y="1265" as="geometry" />
+        </mxCell>
+        <mxCell id="report-ragas" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6ffcc;strokeColor=#82b366;fontSize=9;align=left;spacingLeft=8;" value="📊 Retrieval Quality&#xa;• RAGAS per strategy&#xa;• Winner per category" vertex="1">
+          <mxGeometry height="50" width="125" x="1045" y="1265" as="geometry" />
+        </mxCell>
+        <mxCell id="report-output" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;fontStyle=1;" value="HTML + Markdown + LaTeX&#xa;Comparative tables + Statistical significance" vertex="1">
+          <mxGeometry height="35" width="260" x="910" y="1323" as="geometry" />
+        </mxCell>
+        <mxCell id="arrow-silver-eval-to-report" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#C62828;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <Array as="points">
+              <mxPoint x="1045" y="1220" />
+              <mxPoint x="975" y="1220" />
+            </Array>
+            <mxPoint x="1045" y="1114" as="sourcePoint" />
+            <mxPoint x="975" y="1235" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-c-to-r" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1.5;strokeColor=#82b366;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="880" y="1295" as="sourcePoint" />
+            <mxPoint x="900" y="1295" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-1" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="200" y="200" as="sourcePoint" />
+            <mxPoint x="230" y="200" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-2" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="430" y="290" as="sourcePoint" />
+            <mxPoint x="460" y="290" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-3" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="660" y="290" as="sourcePoint" />
+            <mxPoint x="690" y="290" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-4" edge="1" parent="1" style="endArrow=classic;startArrow=classic;html=1;strokeWidth=2;strokeColor=#1a73e8;dashed=1;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="940" y="290" as="sourcePoint" />
+            <mxPoint x="970" y="290" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="arrow-gold-to-query" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#B8860B;curved=1;fontSize=9;fontColor=#B8860B;" value="Gold indexes feed retrieval">
+          <mxGeometry height="50" relative="1" width="50" x="0.1" y="10" as="geometry">
+            <mxPoint as="offset" />
+            <Array as="points">
+              <mxPoint x="815" y="490" />
+              <mxPoint x="700" y="490" />
+            </Array>
+            <mxPoint x="815" y="460" as="sourcePoint" />
+            <mxPoint x="610" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="legend-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="" vertex="1">
+          <mxGeometry height="100" width="540" x="40" y="1390" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1;fontColor=#333333;" value="LEGEND" vertex="1">
+          <mxGeometry height="20" width="100" x="50" y="1395" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-1" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" value="🥉 Bronze = Raw Data" vertex="1">
+          <mxGeometry height="20" width="120" x="50" y="1415" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-2" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" value="🥈 Silver = Cleaned + Enriched" vertex="1">
+          <mxGeometry height="20" width="150" x="50" y="1435" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-3" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" value="🥇 Gold = Business-Ready" vertex="1">
+          <mxGeometry height="20" width="150" x="50" y="1455" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-4" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" value="☁️ Azure = Cloud Services" vertex="1">
+          <mxGeometry height="20" width="150" x="220" y="1415" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-5" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" value="🔎 GraphRAG = Community + Entity Retrieval" vertex="1">
+          <mxGeometry height="20" width="230" x="220" y="1435" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-6" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" value="🛤️ PathRAG = Multi-hop Path Retrieval" vertex="1">
+          <mxGeometry height="20" width="230" x="220" y="1455" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-7" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" value="📊 RAGAS = Retrieval Evaluation" vertex="1">
+          <mxGeometry height="20" width="160" x="420" y="1415" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-8" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;" value="🔒 Silver Eval = Anonymization + Summarization" vertex="1">
+          <mxGeometry height="20" width="160" x="420" y="1435" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-9" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=10;fontStyle=2;" value="⚙️ One strategy runs per evaluation pass" vertex="1">
+          <mxGeometry height="20" width="160" x="420" y="1455" as="geometry" />
+        </mxCell>
+        <mxCell id="timeline-box" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;" value="" vertex="1">
+          <mxGeometry height="100" width="590" x="600" y="1390" as="geometry" />
+        </mxCell>
+        <mxCell id="timeline-title" parent="1" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=11;fontStyle=1;fontColor=#333333;" value="EXECUTION TIMELINE (11 Weeks)" vertex="1">
+          <mxGeometry height="20" width="200" x="610" y="1395" as="geometry" />
+        </mxCell>
+        <mxCell id="phase-1" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=9;" value="P1: Ingestion&#xa;Weeks 1-2" vertex="1">
+          <mxGeometry height="40" width="75" x="610" y="1420" as="geometry" />
+        </mxCell>
+        <mxCell id="phase-2" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=9;" value="P2: NLP&#xa;Weeks 3-4" vertex="1">
+          <mxGeometry height="40" width="75" x="695" y="1420" as="geometry" />
+        </mxCell>
+        <mxCell id="phase-2b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#C62828;fontSize=9;" value="P2b: Silver&#xa;Eval" vertex="1">
+          <mxGeometry height="20" width="75" x="695" y="1465" as="geometry" />
+        </mxCell>
+        <mxCell id="phase-3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" value="P3: Index&#xa;Week 5" vertex="1">
+          <mxGeometry height="40" width="75" x="780" y="1420" as="geometry" />
+        </mxCell>
+        <mxCell id="phase-4a" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=9;" value="P4a:&#xa;GraphRAG&#xa;Wk 6-7" vertex="1">
+          <mxGeometry height="40" width="65" x="865" y="1420" as="geometry" />
+        </mxCell>
+        <mxCell id="phase-4b" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8DAEF;strokeColor=#6C3483;fontSize=9;" value="P4b:&#xa;PathRAG&#xa;Wk 8" vertex="1">
+          <mxGeometry height="40" width="65" x="940" y="1420" as="geometry" />
+        </mxCell>
+        <mxCell id="phase-5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e6ffcc;strokeColor=#82b366;fontSize=9;" value="P5: RAGAS&#xa;Eval Wk 9-10" vertex="1">
+          <mxGeometry height="40" width="65" x="1015" y="1420" as="geometry" />
+        </mxCell>
+        <mxCell id="thesis" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1a73e8;strokeColor=#0d47a1;fontColor=#ffffff;fontSize=9;" value="📜&#xa;Thesis" vertex="1">
+          <mxGeometry height="40" width="55" x="1090" y="1420" as="geometry" />
+        </mxCell>
+        <mxCell id="t-arrow-1" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="685" y="1440" as="sourcePoint" />
+            <mxPoint x="695" y="1440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t-arrow-2" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="770" y="1440" as="sourcePoint" />
+            <mxPoint x="780" y="1440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t-arrow-3" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="855" y="1440" as="sourcePoint" />
+            <mxPoint x="865" y="1440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t-arrow-4" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="930" y="1440" as="sourcePoint" />
+            <mxPoint x="940" y="1440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t-arrow-5" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="1005" y="1440" as="sourcePoint" />
+            <mxPoint x="1015" y="1440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t-arrow-6" edge="1" parent="1" style="endArrow=classic;html=1;strokeWidth=1;strokeColor=#666666;" value="">
+          <mxGeometry height="50" relative="1" width="50" as="geometry">
+            <mxPoint x="1080" y="1440" as="sourcePoint" />
+            <mxPoint x="1090" y="1440" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -17,9 +17,16 @@ from pathlib import Path
 
 class ProcessingMode(Enum):
     """Processing mode for the pipeline"""
-    OPENAI = "openai"    # Use OpenAI API for everything
+    OPENAI = "openai"    # Use OpenAI/Azure API for PII detection + summarization (alias: LLM)
     LOCAL = "local"      # Use local models only (Presidio/spaCy/regex)
     HYBRID = "hybrid"    # Combine local + OpenAI based on confidence
+
+    @classmethod
+    def from_string(cls, value: str) -> "ProcessingMode":
+        """Parse mode from string, supporting aliases."""
+        value = value.lower().strip()
+        aliases = {"llm": "openai", "openai": "openai", "local": "local", "hybrid": "hybrid"}
+        return cls(aliases.get(value, value))
 
 
 @dataclass
@@ -37,6 +44,32 @@ class OpenAIConfig:
         # Try to get API key from environment if not provided
         if self.api_key is None:
             self.api_key = os.getenv("OPENAI_API_KEY")
+
+
+@dataclass
+class AzureOpenAIConfig:
+    """Azure OpenAI API configuration"""
+    endpoint: Optional[str] = None
+    api_key: Optional[str] = None
+    deployment: str = "gpt-4o"
+    embedding_deployment: str = "text-embedding-3-large"
+    api_version: str = "2024-12-01-preview"
+
+    def __post_init__(self):
+        if self.endpoint is None:
+            self.endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        if self.api_key is None:
+            self.api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        if not self.deployment or self.deployment == "gpt-4o":
+            self.deployment = os.getenv("AZURE_OPENAI_GPT4O_DEPLOYMENT", "gpt-4o")
+
+
+@dataclass
+class IdentityRegistryConfig:
+    """Identity Registry configuration"""
+    enabled: bool = True
+    registry_path: str = "./data/identity_registry.json"
+    auto_build: bool = True  # Build from bronze if registry file doesn't exist
 
 
 @dataclass
@@ -87,14 +120,16 @@ class SummarizationConfig:
 @dataclass
 class PipelineConfig:
     """Main pipeline configuration"""
-    # Processing mode (OPENAI, LOCAL, or HYBRID)
+    # Processing mode (OPENAI/LLM, LOCAL, or HYBRID)
     mode: ProcessingMode = ProcessingMode.OPENAI
 
     # Sub-configurations
     openai: OpenAIConfig = field(default_factory=OpenAIConfig)
+    azure_openai: AzureOpenAIConfig = field(default_factory=AzureOpenAIConfig)
     pii: PIIConfig = field(default_factory=PIIConfig)
     anonymization: AnonymizationConfig = field(default_factory=AnonymizationConfig)
     summarization: SummarizationConfig = field(default_factory=SummarizationConfig)
+    identity_registry: IdentityRegistryConfig = field(default_factory=IdentityRegistryConfig)
 
     # Data paths
     bronze_path: str = "./data/bronze"
@@ -109,13 +144,23 @@ class PipelineConfig:
     def from_env(cls) -> "PipelineConfig":
         """Create configuration from environment variables"""
         mode_str = os.getenv("PIPELINE_MODE", "openai").lower()
-        mode = ProcessingMode(mode_str)
+        mode = ProcessingMode.from_string(mode_str)
 
         return cls(
             mode=mode,
             openai=OpenAIConfig(
                 api_key=os.getenv("OPENAI_API_KEY"),
                 model=os.getenv("OPENAI_MODEL", "gpt-4o"),
+            ),
+            azure_openai=AzureOpenAIConfig(
+                endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+                api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+                deployment=os.getenv("AZURE_OPENAI_GPT4O_DEPLOYMENT", "gpt-4o"),
+                embedding_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "text-embedding-3-large"),
+            ),
+            identity_registry=IdentityRegistryConfig(
+                enabled=os.getenv("IDENTITY_REGISTRY_ENABLED", "true").lower() == "true",
+                registry_path=os.getenv("IDENTITY_REGISTRY_PATH", "./data/identity_registry.json"),
             ),
             bronze_path=os.getenv("BRONZE_PATH", "./data/bronze"),
             silver_path=os.getenv("SILVER_PATH", "./data/silver"),

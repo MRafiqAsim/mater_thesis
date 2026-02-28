@@ -2,12 +2,23 @@
 Unified Processor
 
 Combines PII detection, anonymization, and summarization based on configuration.
-Supports three modes: OPENAI, LOCAL, and HYBRID.
+Supports three modes: LOCAL, LLM, and HYBRID.
+
+| Feature        | LOCAL                        | LLM              | HYBRID                           |
+|----------------|------------------------------|-------------------|----------------------------------|
+| PII Detection  | Hardened Presidio+spaCy+regex| Azure GPT-4o     | Local first → LLM verify (<0.8) |
+| Identity       | Registry lookup              | Registry lookup   | Registry lookup                  |
+| Anonymization  | Local (replace)              | Local (replace)   | Local (replace)                  |
+| Summarization  | Extractive (first sentences) | Azure GPT-4o     | Azure GPT-4o                     |
+| KG Extraction  | spaCy                        | spaCy + LLM      | spaCy                            |
+| Cost           | $0                           | Highest           | Medium                           |
 """
 
 import logging
-from typing import List, Optional, Dict, Any, Tuple
+import re
+from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
+from enum import Enum
 
 import sys
 from pathlib import Path
@@ -50,19 +61,21 @@ class UnifiedProcessor:
     Unified text processor that handles PII detection, anonymization, and summarization.
 
     Supports three modes based on configuration:
-    - OPENAI: Use OpenAI API for all processing
-    - LOCAL: Use local models (Presidio/spaCy/regex)
-    - HYBRID: Combine local for high-confidence, OpenAI for complex cases
+    - LOCAL: Hardened Presidio+spaCy+regex, extractive summaries, $0 cost
+    - LLM: Azure GPT-4o for PII detection and summarization
+    - HYBRID: Local detection first, LLM verifies low-confidence (<0.8), LLM summarization
     """
 
-    def __init__(self, config: Optional[PipelineConfig] = None):
+    def __init__(self, config: Optional[PipelineConfig] = None, identity_registry=None):
         """
         Initialize the unified processor.
 
         Args:
             config: Pipeline configuration (uses global config if not provided)
+            identity_registry: Optional IdentityRegistry for consistent pseudonyms
         """
         self.config = config or get_config()
+        self.identity_registry = identity_registry
         self._local_detector = None
         self._local_anonymizer = None
         self._openai_detector = None
@@ -75,6 +88,7 @@ class UnifiedProcessor:
         """Initialize processing components based on mode"""
         mode = self.config.mode
 
+        # Map OPENAI mode to LLM behavior
         if mode in [ProcessingMode.LOCAL, ProcessingMode.HYBRID]:
             self._init_local_components()
 
@@ -92,8 +106,11 @@ class UnifiedProcessor:
                 use_presidio=self.config.pii.use_presidio,
                 use_spacy=self.config.pii.use_spacy,
                 use_regex=self.config.pii.use_regex,
+                identity_registry=self.identity_registry,
             )
-            self._local_anonymizer = Anonymizer()
+            self._local_anonymizer = Anonymizer(
+                identity_registry=self.identity_registry,
+            )
             logger.info("Local processing components initialized")
 
         except Exception as e:
@@ -102,33 +119,55 @@ class UnifiedProcessor:
                 raise
 
     def _init_openai_components(self):
-        """Initialize OpenAI processing components"""
+        """Initialize OpenAI/Azure OpenAI processing components"""
         try:
             from .openai_pii_detector import OpenAIPIIDetector, OpenAIAnonymizer
             from .openai_summarizer import OpenAISummarizer
 
             api_key = self.config.openai.api_key
-            model = self.config.openai.model
+
+            # Check for Azure OpenAI config
+            use_azure = hasattr(self.config, 'azure_openai') and self.config.azure_openai
+            azure_endpoint = getattr(self.config, 'azure_openai', {})
+            azure_kwargs = {}
+
+            if use_azure and isinstance(azure_endpoint, dict):
+                azure_kwargs = {
+                    "use_azure": True,
+                    "azure_endpoint": azure_endpoint.get("endpoint"),
+                    "azure_api_version": azure_endpoint.get("api_version", "2024-12-01-preview"),
+                    "azure_deployment": azure_endpoint.get("deployment"),
+                }
+                api_key = api_key or azure_endpoint.get("api_key")
 
             if not api_key:
-                raise ValueError("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.")
+                import os
+                api_key = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+
+            if not api_key:
+                raise ValueError("API key not configured. Set AZURE_OPENAI_API_KEY or OPENAI_API_KEY.")
+
+            model = self.config.openai.model
 
             self._openai_detector = OpenAIPIIDetector(
                 api_key=api_key,
                 model=model,
                 confidence_threshold=self.config.pii.confidence_threshold,
+                identity_registry=self.identity_registry,
+                **azure_kwargs,
             )
             self._openai_anonymizer = OpenAIAnonymizer(
                 api_key=api_key,
                 model=model,
                 generate_synthetic=self.config.anonymization.generate_synthetic,
+                **azure_kwargs,
             )
             self._openai_summarizer = OpenAISummarizer(
                 api_key=api_key,
                 model=model,
                 max_summary_length=self.config.summarization.max_summary_length,
             )
-            logger.info("OpenAI processing components initialized")
+            logger.info("OpenAI/Azure processing components initialized")
 
         except ImportError:
             logger.error("OpenAI package not installed. Run: pip install openai")
@@ -168,34 +207,26 @@ class UnifiedProcessor:
         mode = self.config.mode
 
         if mode == ProcessingMode.OPENAI:
-            return self._process_openai(text, language, include_summary)
+            return self._process_llm(text, language, include_summary)
         elif mode == ProcessingMode.LOCAL:
             return self._process_local(text, language, include_summary)
         else:  # HYBRID
             return self._process_hybrid(text, language, include_summary)
 
-    def _process_openai(
+    def _process_llm(
         self,
         text: str,
         language: str,
         include_summary: bool
     ) -> ProcessingResult:
-        """Process using OpenAI API"""
-        # Detect PII
+        """Process using LLM (Azure GPT-4o) for PII detection + summarization"""
+        # Detect PII with LLM
         pii_entities = self._openai_detector.detect(text, language)
 
-        # Anonymize
-        strategy = self.config.anonymization.default_strategy
-        if strategy == "synthetic":
-            anonymized = self._openai_anonymizer.anonymize(
-                text, pii_entities, strategy="synthetic"
-            )
-        else:
-            anonymized = self._openai_anonymizer.anonymize(
-                text, pii_entities, strategy="replace"
-            )
+        # Anonymize locally (all modes use local replacement)
+        anonymized = self._apply_local_anonymization(text, pii_entities, language)
 
-        # Summarize (on anonymized text for privacy)
+        # Summarize with LLM
         summary = None
         key_entities = []
         key_topics = []
@@ -216,7 +247,7 @@ class UnifiedProcessor:
             pii_entities=pii_entities,
             key_entities=key_entities,
             key_topics=key_topics,
-            processing_mode="openai",
+            processing_mode="llm",
         )
 
     def _process_local(
@@ -225,35 +256,17 @@ class UnifiedProcessor:
         language: str,
         include_summary: bool
     ) -> ProcessingResult:
-        """Process using local models"""
-        # Detect PII
+        """Process using local models only (Presidio+spaCy+regex)"""
+        # Detect PII locally
         pii_entities = self._local_detector.detect(text, language)
 
-        # Anonymize - use keyword arguments to avoid position errors
-        from .anonymizer import AnonymizationStrategy
-        strategy_map = {
-            "replace": AnonymizationStrategy.REPLACE,
-            "hash": AnonymizationStrategy.HASH,
-            "mask": AnonymizationStrategy.MASK,
-            "redact": AnonymizationStrategy.REDACT,
-        }
-        strategy = strategy_map.get(
-            self.config.anonymization.default_strategy,
-            AnonymizationStrategy.REPLACE
-        )
+        # Anonymize locally
+        anonymized = self._apply_local_anonymization(text, pii_entities, language)
 
-        result = self._local_anonymizer.anonymize(
-            text=text,
-            language=language,
-            strategy=strategy,
-            entities=pii_entities,
-        )
-        anonymized = result.anonymized_text
-
-        # No local summarization available
+        # Extractive summary (no LLM cost)
         summary = None
         if include_summary:
-            logger.warning("Summarization not available in LOCAL mode")
+            summary = self._generate_extractive_summary(anonymized)
 
         return ProcessingResult(
             original_text=text,
@@ -271,7 +284,7 @@ class UnifiedProcessor:
         language: str,
         include_summary: bool
     ) -> ProcessingResult:
-        """Process using hybrid approach: local first, OpenAI for uncertain cases"""
+        """Process using hybrid approach: local first, LLM verifies low-confidence entities"""
         # Step 1: Local detection
         local_entities = self._local_detector.detect(text, language)
 
@@ -286,14 +299,13 @@ class UnifiedProcessor:
             else:
                 low_conf_entities.append(entity)
 
-        # Step 3: Use OpenAI for verification if there are low-confidence entities
-        # or if we suspect there might be missed entities
+        # Step 3: Use LLM for verification if there are low-confidence entities
         final_entities = high_conf_entities.copy()
 
-        if low_conf_entities or self._should_verify_with_openai(text, local_entities):
+        if low_conf_entities or self._should_verify_with_llm(text, local_entities):
             openai_entities = self._openai_detector.detect(text, language)
 
-            # Merge: keep OpenAI entities that don't overlap with high-conf local
+            # Merge: keep LLM entities that don't overlap with high-conf local
             for oe in openai_entities:
                 overlap = False
                 for le in high_conf_entities:
@@ -306,28 +318,10 @@ class UnifiedProcessor:
         # Deduplicate
         final_entities = self._deduplicate_entities(final_entities)
 
-        # Anonymize using local anonymizer - use keyword arguments
-        from .anonymizer import AnonymizationStrategy
-        strategy_map = {
-            "replace": AnonymizationStrategy.REPLACE,
-            "hash": AnonymizationStrategy.HASH,
-            "mask": AnonymizationStrategy.MASK,
-            "redact": AnonymizationStrategy.REDACT,
-        }
-        strategy = strategy_map.get(
-            self.config.anonymization.default_strategy,
-            AnonymizationStrategy.REPLACE
-        )
+        # Anonymize locally (all modes use local replacement)
+        anonymized = self._apply_local_anonymization(text, final_entities, language)
 
-        result = self._local_anonymizer.anonymize(
-            text=text,
-            language=language,
-            strategy=strategy,
-            entities=final_entities,
-        )
-        anonymized = result.anonymized_text
-
-        # Summarize with OpenAI
+        # Summarize with LLM
         summary = None
         key_entities = []
         key_topics = []
@@ -352,27 +346,69 @@ class UnifiedProcessor:
             metadata={
                 "local_entities_count": len(local_entities),
                 "high_conf_count": len(high_conf_entities),
-                "openai_verified": True,
+                "llm_verified": True,
             }
         )
 
-    def _should_verify_with_openai(
+    def _apply_local_anonymization(
+        self,
+        text: str,
+        entities: List[PIIEntity],
+        language: str,
+    ) -> str:
+        """Apply local anonymization using the Anonymizer (with identity registry)."""
+        if not entities:
+            return text
+
+        from .anonymizer import Anonymizer, AnonymizationStrategy
+
+        # Use the pre-initialized anonymizer if available
+        anonymizer = self._local_anonymizer
+        if not anonymizer:
+            anonymizer = Anonymizer(identity_registry=self.identity_registry)
+
+        strategy_map = {
+            "replace": AnonymizationStrategy.REPLACE,
+            "hash": AnonymizationStrategy.HASH,
+            "mask": AnonymizationStrategy.MASK,
+            "redact": AnonymizationStrategy.REDACT,
+        }
+        strategy = strategy_map.get(
+            self.config.anonymization.default_strategy,
+            AnonymizationStrategy.REPLACE
+        )
+
+        result = anonymizer.anonymize(
+            text=text,
+            language=language,
+            strategy=strategy,
+            entities=entities,
+        )
+        return result.anonymized_text
+
+    def _generate_extractive_summary(self, text: str, max_sentences: int = 3) -> str:
+        """Generate a simple extractive summary (first N sentences, no LLM)."""
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        # Filter out very short fragments and header lines
+        meaningful = [
+            s for s in sentences
+            if len(s) > 20 and not s.startswith(('[', '---', 'From:', 'To:', 'Date:', 'Subject:'))
+        ]
+        if not meaningful:
+            return text[:300] + "..." if len(text) > 300 else text
+        return " ".join(meaningful[:max_sentences])
+
+    def _should_verify_with_llm(
         self,
         text: str,
         local_entities: List[PIIEntity]
     ) -> bool:
-        """Determine if OpenAI verification is needed"""
-        # Verify if:
-        # 1. Text is long but few entities detected
-        # 2. Text contains patterns that might indicate missed PII
-        # 3. No PERSON entities detected in text with names-like patterns
-
+        """Determine if LLM verification is needed"""
         words = text.split()
         if len(words) > 50 and len(local_entities) == 0:
             return True
 
-        # Check for potential missed person names (capitalized words not at sentence start)
-        import re
+        # Check for potential missed person names
         potential_names = re.findall(r'(?<=[a-z]\s)[A-Z][a-z]+', text)
         person_entities = [e for e in local_entities if e.pii_type == PIIType.PERSON]
         if len(potential_names) > len(person_entities) * 2:
@@ -392,7 +428,6 @@ class UnifiedProcessor:
         if not entities:
             return []
 
-        # Sort by position, then confidence
         sorted_entities = sorted(
             entities,
             key=lambda e: (e.start, -e.confidence)
@@ -400,7 +435,6 @@ class UnifiedProcessor:
 
         result = []
         for entity in sorted_entities:
-            # Check if overlaps with any existing
             overlap = False
             for existing in result:
                 if self._entities_overlap(entity, existing):
@@ -438,7 +472,7 @@ class UnifiedProcessor:
 def process_text(
     text: str,
     language: str = "en",
-    mode: str = "openai",
+    mode: str = "local",
     include_summary: bool = True
 ) -> ProcessingResult:
     """
@@ -447,7 +481,7 @@ def process_text(
     Args:
         text: Text to process
         language: Text language
-        mode: Processing mode ("openai", "local", "hybrid")
+        mode: Processing mode ("local", "llm", "hybrid")
         include_summary: Whether to generate summary
 
     Returns:
@@ -455,6 +489,8 @@ def process_text(
     """
     from config import init_config
 
-    config = init_config(mode=mode)
+    # Map "llm" to "openai" for backward compatibility with ProcessingMode enum
+    mode_map = {"llm": "openai", "local": "local", "hybrid": "hybrid"}
+    config = init_config(mode=mode_map.get(mode, mode))
     processor = UnifiedProcessor(config)
     return processor.process(text, language, include_summary)
