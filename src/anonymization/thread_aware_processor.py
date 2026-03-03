@@ -237,15 +237,20 @@ class ThreadAwareProcessor:
             identity_registry=identity_registry,
         )
 
-        # Attachment processing
-        self.process_attachments = process_attachments
+        # Attachment processing — env flag overrides constructor arg
+        env_process_att = os.environ.get("PROCESS_ATTACHMENTS", "").lower()
+        if env_process_att in ("false", "0", "no"):
+            self.process_attachments = False
+            logger.info("Attachment processing DISABLED (PROCESS_ATTACHMENTS=false)")
+        elif env_process_att in ("true", "1", "yes"):
+            self.process_attachments = process_attachments  # respect constructor arg
+        else:
+            self.process_attachments = process_attachments
         self.include_attachment_text = include_attachment_text
 
-        # Attachment classification limits (configurable via env)
-        self.max_tokens_knowledge = int(os.environ.get("ATTACHMENT_MAX_TOKENS_KNOWLEDGE", "0"))
         self.attachment_processor = None
 
-        if process_attachments:
+        if self.process_attachments:
             try:
                 self.attachment_processor = AttachmentProcessor(
                     bronze_path=str(self.bronze_path),
@@ -480,16 +485,7 @@ class ThreadAwareProcessor:
 
             self.stats["attachments_with_text"] += 1
 
-            # Optionally truncate knowledge attachments
             text = att_content.text
-            if self.max_tokens_knowledge > 0:
-                max_chars = self.max_tokens_knowledge * 4
-                if len(text) > max_chars:
-                    text = text[:max_chars]
-                    logger.info(
-                        f"Truncated knowledge attachment '{att_content.filename}' "
-                        f"from {len(att_content.text)} to {max_chars} chars"
-                    )
 
             # Chunk the attachment text
             text_chunks = self.chunker.chunk(

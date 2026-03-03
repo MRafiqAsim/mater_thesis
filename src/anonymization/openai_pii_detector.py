@@ -9,6 +9,8 @@ import logging
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
+import httpx
+
 from .pii_detector import PIIEntity, PIIType
 
 logger = logging.getLogger(__name__)
@@ -119,6 +121,8 @@ class OpenAIPIIDetector:
                     api_key=api_key,
                     azure_endpoint=azure_endpoint,
                     api_version=azure_api_version,
+                    timeout=httpx.Timeout(120.0, connect=10.0),
+                    max_retries=2,
                 )
                 logger.info(f"Azure OpenAI PII Detector initialized: {azure_endpoint}, deployment={self.model}")
             else:
@@ -321,6 +325,8 @@ class OpenAIAnonymizer:
                     api_key=api_key,
                     azure_endpoint=azure_endpoint,
                     api_version=azure_api_version,
+                    timeout=httpx.Timeout(120.0, connect=10.0),
+                    max_retries=2,
                 )
             else:
                 from openai import OpenAI

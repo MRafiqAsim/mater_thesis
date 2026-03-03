@@ -21,6 +21,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Set, Tuple
 
+import httpx
+
 from .kg_entity_extractor import KGEntity
 
 logger = logging.getLogger(__name__)
@@ -270,7 +272,9 @@ class LLMRelationshipExtractor(RelationshipExtractor):
             return AzureOpenAI(
                 api_key=self.api_key,
                 azure_endpoint=self.azure_endpoint,
-                api_version=self.azure_api_version
+                api_version=self.azure_api_version,
+                timeout=httpx.Timeout(120.0, connect=10.0),
+                max_retries=2,
             )
         else:
             from openai import OpenAI
