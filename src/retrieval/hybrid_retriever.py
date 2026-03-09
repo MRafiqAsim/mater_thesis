@@ -14,10 +14,73 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+import yaml
+
 from .retrieval_tools import RetrievalToolkit, ToolResult
 from .react_retriever import ReActRetriever, ReActResult
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Prompt configuration (loaded from config/prompts.yaml)
+# ---------------------------------------------------------------------------
+_PROMPTS_CACHE: Optional[Dict[str, Any]] = None
+
+
+def _load_prompts() -> Dict[str, Any]:
+    """Load prompt configuration from config/prompts.yaml (cached)."""
+    global _PROMPTS_CACHE
+    if _PROMPTS_CACHE is not None:
+        return _PROMPTS_CACHE
+
+    # Walk up from this file to find the project root (contains config/)
+    prompts_path = Path(__file__).resolve().parent.parent.parent / "config" / "prompts.yaml"
+    if prompts_path.exists():
+        with open(prompts_path, "r", encoding="utf-8") as f:
+            _PROMPTS_CACHE = yaml.safe_load(f)
+            logger.info(f"Loaded prompts from {prompts_path}")
+            return _PROMPTS_CACHE
+
+    logger.warning(f"Prompts config not found at {prompts_path}, using built-in defaults")
+    _PROMPTS_CACHE = {}
+    return _PROMPTS_CACHE
+
+
+def _get_generation_config() -> Dict[str, Any]:
+    """Get the 'generation' section from prompts config with defaults."""
+    prompts = _load_prompts()
+    gen = prompts.get("generation", {})
+    defaults = {
+        "system_prompt": (
+            "You are a helpful assistant that answers questions based ONLY on the provided context.\n\n"
+            "CRITICAL RULES:\n"
+            "1. ONLY use information from the provided context\n"
+            "2. If the context doesn't contain the answer, say \"I don't have enough information to answer this question\"\n"
+            "3. Always cite which source(s) you used by mentioning [chunk_id] format\n"
+            "4. Never make up information or use knowledge from outside the context\n"
+            "5. If you can partially answer, do so and explain what information is missing\n\n"
+            "Be concise and factual."
+        ),
+        "user_prompt": (
+            "Context:\n{context}\n\n"
+            "Question: {question}\n\n"
+            "Answer based ONLY on the context above. If the information is not in the context, say so explicitly."
+        ),
+        "temperature": 0.3,
+        "max_tokens": 1000,
+        "missing_indicators": [
+            "don't have enough information",
+            "not in the context",
+            "cannot find",
+            "no information",
+            "not mentioned",
+            "insufficient context",
+            "does not contain",
+        ],
+    }
+    for key, default in defaults.items():
+        gen.setdefault(key, default)
+    return gen
 
 
 class RetrievalStrategy(Enum):
@@ -40,6 +103,8 @@ class RetrievalResult:
     sources: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     execution_time: float = 0.0
+    is_grounded: bool = True
+    missing_info: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -50,7 +115,9 @@ class RetrievalResult:
             "confidence": self.confidence,
             "sources": self.sources,
             "metadata": self.metadata,
-            "execution_time": self.execution_time
+            "execution_time": self.execution_time,
+            "is_grounded": self.is_grounded,
+            "missing_info": self.missing_info,
         }
 
 
@@ -179,8 +246,10 @@ class HybridRetriever:
 
         # Generate answer if configured
         answer = ""
+        is_grounded = True
+        missing_info = None
         if self.config.use_llm_answer and chunks:
-            answer = self._generate_answer(query, chunks[:self.config.max_context_chunks])
+            answer, is_grounded, missing_info = self._generate_answer(query, chunks[:self.config.max_context_chunks])
 
         return RetrievalResult(
             query=query,
@@ -189,7 +258,9 @@ class HybridRetriever:
             strategy="vector",
             confidence=self._calculate_confidence(chunks),
             sources=[c.get("chunk_id", "") for c in chunks],
-            metadata={"tool_message": tool_result.message}
+            metadata={"tool_message": tool_result.message},
+            is_grounded=is_grounded,
+            missing_info=missing_info,
         )
 
     def _pathrag_retrieve(self, query: str) -> RetrievalResult:
@@ -221,13 +292,15 @@ class HybridRetriever:
 
         # Generate answer
         answer = ""
+        is_grounded = True
+        missing_info = None
         if self.config.use_llm_answer and chunks:
             # Include path information in context
             path_context = "\n".join([
                 f"Path: {p.get('description', '')}"
                 for p in path_result.data[:3]
             ])
-            answer = self._generate_answer(
+            answer, is_grounded, missing_info = self._generate_answer(
                 query,
                 chunks[:self.config.max_context_chunks],
                 extra_context=f"Reasoning paths found:\n{path_context}"
@@ -243,7 +316,9 @@ class HybridRetriever:
             metadata={
                 "paths_found": len(path_result.data),
                 "entities_used": entities
-            }
+            },
+            is_grounded=is_grounded,
+            missing_info=missing_info,
         )
 
     def _graphrag_retrieve(self, query: str) -> RetrievalResult:
@@ -283,11 +358,13 @@ class HybridRetriever:
 
         # Generate answer with community context
         answer = ""
+        is_grounded = True
+        missing_info = None
         if self.config.use_llm_answer:
             community_context = "\n\n".join([
                 f"Community Context: {s}" for s in community_summaries
             ])
-            answer = self._generate_answer(
+            answer, is_grounded, missing_info = self._generate_answer(
                 query,
                 chunks[:self.config.max_context_chunks],
                 extra_context=community_context
@@ -303,7 +380,9 @@ class HybridRetriever:
             metadata={
                 "communities_found": len(community_result.data),
                 "community_summaries": community_summaries
-            }
+            },
+            is_grounded=is_grounded,
+            missing_info=missing_info,
         )
 
     def _hybrid_retrieve(self, query: str) -> RetrievalResult:
@@ -354,6 +433,8 @@ class HybridRetriever:
 
         # Generate answer
         answer = ""
+        is_grounded = True
+        missing_info = None
         if self.config.use_llm_answer and final_chunks:
             # Include context from all strategies
             extra_context = ""
@@ -364,7 +445,7 @@ class HybridRetriever:
                 for summary in graphrag_result.metadata["community_summaries"][:2]:
                     extra_context += f"- {summary[:200]}\n"
 
-            answer = self._generate_answer(
+            answer, is_grounded, missing_info = self._generate_answer(
                 query,
                 final_chunks[:self.config.max_context_chunks],
                 extra_context=extra_context
@@ -382,7 +463,9 @@ class HybridRetriever:
                 "pathrag_chunks": len(pathrag_result.chunks),
                 "graphrag_chunks": len(graphrag_result.chunks),
                 "fusion_scores": {k: v[1] for k, v in list(chunk_scores.items())[:10]}
-            }
+            },
+            is_grounded=is_grounded,
+            missing_info=missing_info,
         )
 
     def _react_retrieve(self, query: str) -> RetrievalResult:
@@ -454,10 +537,17 @@ class HybridRetriever:
         query: str,
         chunks: List[Dict[str, Any]],
         extra_context: str = ""
-    ) -> str:
-        """Generate answer using LLM."""
+    ) -> Tuple[str, bool, Optional[str]]:
+        """
+        Generate answer using LLM with grounding check.
+
+        Returns:
+            (answer, is_grounded, missing_info)
+        """
         if not self.llm_client or not chunks:
-            return ""
+            return "", True, None
+
+        gen_cfg = _get_generation_config()
 
         # Build context from chunks
         context_parts = []
@@ -472,27 +562,39 @@ class HybridRetriever:
         if extra_context:
             context = f"{extra_context}\n\n---\n\nEvidence:\n{context}"
 
-        prompt = f"""Based on the following context from an email archive, answer the question.
-Always cite your sources using [chunk_id] format.
-
-Context:
-{context}
-
-Question: {query}
-
-Answer:"""
+        # Format prompts from config
+        system_prompt = gen_cfg["system_prompt"]
+        user_prompt = gen_cfg["user_prompt"].format(
+            context=context,
+            question=query,
+        )
 
         try:
             response = self.llm_client.chat.completions.create(
                 model=self.config.answer_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=1000
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=gen_cfg["temperature"],
+                max_tokens=gen_cfg["max_tokens"],
             )
-            return response.choices[0].message.content
+            answer = response.choices[0].message.content or ""
         except Exception as e:
             logger.error(f"Answer generation failed: {e}")
-            return ""
+            return "", True, None
+
+        # Grounding check
+        is_grounded = True
+        missing_info: Optional[str] = None
+
+        for indicator in gen_cfg["missing_indicators"]:
+            if indicator.lower() in answer.lower():
+                is_grounded = False
+                missing_info = "Required information not found in knowledge base"
+                break
+
+        return answer, is_grounded, missing_info
 
     def compare_strategies(self, query: str) -> Dict[str, RetrievalResult]:
         """

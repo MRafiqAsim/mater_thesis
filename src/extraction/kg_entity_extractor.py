@@ -267,7 +267,7 @@ class LLMKGExtractor(KGEntityExtractor):
         """
         self.api_key = api_key
         self.model = model
-        self.entity_types = entity_types or DEFAULT_KG_ENTITY_TYPES
+        self.entity_types = (entity_types or DEFAULT_KG_ENTITY_TYPES) | PATHRAG_PII_ENTITY_TYPES
         self.use_azure = use_azure
         self.azure_endpoint = azure_endpoint
         self.azure_api_version = azure_api_version
@@ -339,7 +339,8 @@ Return ONLY the JSON array, no other text."""
                         start=e.get("start", 0),
                         end=e.get("end", 0),
                         confidence=0.95,
-                        source="llm"
+                        source="llm",
+                        is_pii=e.get("type") in PATHRAG_PII_ENTITY_TYPES,
                     )
                     for e in raw_entities
                     if e.get("type") in self.entity_types

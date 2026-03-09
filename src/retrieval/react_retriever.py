@@ -103,7 +103,7 @@ After receiving an observation, continue with another THOUGHT, ACTION, or provid
 
 When you have enough information, respond with:
 - THOUGHT: Summarize what you learned and why you can answer now
-- FINAL_ANSWER: Your complete answer with citations
+- FINAL_ANSWER: Your complete answer
 
 ## Guidelines
 
@@ -112,7 +112,7 @@ When you have enough information, respond with:
 3. Use GraphRAG for broad topic/context questions
 4. Use VectorSearch for finding specific evidence
 5. Combine multiple tools when needed for complex queries
-6. Always cite your sources using [chunk_id] or [community_id]
+6. Do NOT include source references, chunk IDs, or citations in your final answer — sources are displayed separately
 7. If you cannot find relevant information, say so clearly
 
 ## Example
@@ -136,9 +136,8 @@ ACTION_INPUT: {{"query": "John decisions project"}}
 THOUGHT: I now have enough information to answer the question comprehensively.
 
 FINAL_ANSWER: Based on the email archive, John made several key decisions about the project:
-1. [Decision 1] [chunk_abc123]
-2. [Decision 2] [chunk_def456]
-...
+1. He approved the revised timeline for phase 2.
+2. He reassigned the testing workstream to a different team.
 """
 
     def __init__(
@@ -415,13 +414,13 @@ FINAL_ANSWER: Based on the email archive, John made several key decisions about 
             summaries = []
             for item in data[:5]:  # Limit to 5 items
                 if isinstance(item, dict):
-                    # Format dict nicely
+                    # Format dict nicely — always include IDs so the agent can reference them
                     summary_parts = []
-                    for key in ['description', 'summary', 'text', 'name', 'path_type']:
+                    for key in ['chunk_id', 'community_id', 'path_id', 'description', 'summary', 'text', 'name', 'path_type']:
                         if key in item:
                             value = str(item[key])[:200]
                             summary_parts.append(f"{key}: {value}")
-                    summaries.append(" | ".join(summary_parts[:3]))
+                    summaries.append(" | ".join(summary_parts[:4]))
                 else:
                     summaries.append(str(item)[:100])
             return f"Found {len(data)} results:\n" + "\n".join(f"- {s}" for s in summaries)
@@ -477,7 +476,7 @@ FINAL_ANSWER: Based on the email archive, John made several key decisions about 
         steps: List[ReActStep],
         sources: List[Dict[str, Any]]
     ) -> str:
-        """Generate summary answer if max steps reached."""
+        """Generate a synthesized answer when max steps reached without FINAL_ANSWER."""
         # Collect all observations
         observations = []
         for step in steps:
@@ -487,20 +486,33 @@ FINAL_ANSWER: Based on the email archive, John made several key decisions about 
         if not observations:
             return "I was unable to find relevant information to answer this question."
 
-        # Simple summary
-        answer_parts = [
-            f"Based on the information gathered, here is what I found about: {question}\n"
-        ]
+        # Use LLM to synthesize a proper answer from the raw observations
+        if self.client:
+            context = "\n\n---\n\n".join(obs[:600] for obs in observations[:5])
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.config.model,
+                    messages=[
+                        {"role": "system", "content": (
+                            "You are a helpful assistant that answers questions based ONLY on the provided context. "
+                            "Do NOT include source references, chunk IDs, or citations in your answer — sources are displayed separately. "
+                            "If the context doesn't contain the answer, say so. Be concise and factual."
+                        )},
+                        {"role": "user", "content": (
+                            f"Context:\n{context}\n\n"
+                            f"Question: {question}\n\n"
+                            f"Answer based ONLY on the context above."
+                        )},
+                    ],
+                    temperature=0.3,
+                    max_tokens=1000,
+                )
+                return response.choices[0].message.content or ""
+            except Exception as e:
+                logger.error(f"Summary answer generation failed: {e}")
 
-        for i, obs in enumerate(observations[:3], 1):
-            answer_parts.append(f"\n{i}. {obs[:500]}")
-
-        if sources:
-            source_ids = [s.get('chunk_id') or s.get('community_id') or s.get('path_id')
-                         for s in sources[:5]]
-            answer_parts.append(f"\n\nSources: {', '.join(source_ids)}")
-
-        return "\n".join(answer_parts)
+        # Last resort fallback if LLM call fails
+        return "I found relevant information but was unable to synthesize a complete answer. Please try rephrasing your question."
 
     def is_available(self) -> bool:
         """Check if the retriever is ready to use."""

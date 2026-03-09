@@ -226,10 +226,27 @@ class ThreadAwareProcessor:
             chunk_overlap=chunk_overlap
         )
         self.language_detector = LanguageDetector()
-        self.pii_detector = PIIDetector(
-            confidence_threshold=confidence_threshold,
-            identity_registry=identity_registry,
-        )
+
+        # Initialize PII detector based on processing mode
+        if processing_mode == "llm":
+            from anonymization.openai_pii_detector import OpenAIPIIDetector
+            self.pii_detector = OpenAIPIIDetector(
+                api_key=openai_api_key,
+                confidence_threshold=confidence_threshold,
+                identity_registry=identity_registry,
+                use_azure=use_azure,
+                azure_endpoint=azure_endpoint,
+                azure_api_version=azure_api_version,
+                azure_deployment=azure_deployment,
+            )
+            logger.info("PII detection mode: LLM (OpenAI)")
+        else:
+            self.pii_detector = PIIDetector(
+                confidence_threshold=confidence_threshold,
+                identity_registry=identity_registry,
+            )
+            logger.info(f"PII detection mode: {processing_mode} (Presidio)")
+
         self.anonymizer = Anonymizer(
             detector=self.pii_detector,
             strategy=anonymization_strategy,

@@ -45,6 +45,8 @@ IMPORTANT RULES:
 5. "John Deere" (the company) is ORGANIZATION, not PERSON
 6. Generic emails like "info@company.com" are still EMAIL
 7. Consider context - "Jan" in Dutch text is likely a PERSON name
+8. DATE_OF_BIRTH means ONLY actual birth dates. Do NOT tag email timestamps, "Date:" header values, "Sent:" dates, or general calendar dates as DATE_OF_BIRTH
+9. Do NOT tag email metadata fields (From:, To:, Cc:, Date:, Subject:, Sent:) as PII — only tag the PII values within them
 
 Return your response as a JSON array of detected entities."""
 
@@ -56,7 +58,8 @@ Text:
 {text}
 \"\"\"
 
-Return a JSON array where each element has:
+Return a JSON object with a single key "entities" containing an array.
+Each element must have these exact fields:
 - "text": the exact PII text found
 - "type": the PII type (PERSON, EMAIL, PHONE, etc.)
 - "start": start character position (0-indexed)
@@ -65,12 +68,12 @@ Return a JSON array where each element has:
 - "reasoning": brief explanation why this is PII
 
 Example response:
-[
+{{"entities": [
   {{"text": "John Smith", "type": "PERSON", "start": 8, "end": 18, "confidence": 0.95, "reasoning": "Full person name"}},
   {{"text": "john@email.com", "type": "EMAIL", "start": 30, "end": 44, "confidence": 1.0, "reasoning": "Email address format"}}
-]
+]}}
 
-If no PII is found, return an empty array: []"""
+If no PII is found, return: {{"entities": []}}"""
 
 
 class OpenAIPIIDetector:
@@ -177,9 +180,9 @@ class OpenAIPIIDetector:
             content = response.choices[0].message.content
             result = json.loads(content)
 
-            # Handle both array and object with "entities" key
+            # Extract entities array from response
             if isinstance(result, dict):
-                entities_data = result.get("entities", result.get("pii_entities", []))
+                entities_data = result.get("entities", [])
             else:
                 entities_data = result
 
@@ -214,53 +217,71 @@ class OpenAIPIIDetector:
             logger.error(f"OpenAI PII detection failed: {e}")
             return []
 
+    def _find_all_occurrences(self, text: str, substring: str) -> List[int]:
+        """Find all start positions of substring in text."""
+        positions = []
+        start = 0
+        while True:
+            idx = text.find(substring, start)
+            if idx == -1:
+                break
+            positions.append(idx)
+            start = idx + 1
+        return positions
+
     def _validate_positions(
         self,
         entities: List[PIIEntity],
         text: str
     ) -> List[PIIEntity]:
-        """Validate and fix entity positions"""
+        """
+        Validate entity positions and deduplicate.
+
+        GPT-4o may return slightly wrong positions or duplicate entries for
+        repeated text (e.g., a name appearing 4 times in a thread).  We:
+        1. Find ALL real occurrences of the entity text in the source.
+        2. Match each GPT-4o entity to the nearest real occurrence.
+        3. Deduplicate so each (start, end) span appears only once.
+        """
+        # Cache: entity_text -> list of real positions in source text
+        occurrence_cache: Dict[str, List[int]] = {}
+
         validated = []
-
         for entity in entities:
-            # Check if position is valid
-            if entity.start < 0 or entity.end > len(text):
-                # Try to find the text in the document
-                idx = text.find(entity.text)
-                if idx >= 0:
-                    entity = PIIEntity(
-                        text=entity.text,
-                        pii_type=entity.pii_type,
-                        start=idx,
-                        end=idx + len(entity.text),
-                        confidence=entity.confidence,
-                        detection_method=entity.detection_method
-                    )
-                else:
-                    logger.warning(f"Could not find entity text: {entity.text}")
-                    continue
+            # Build/reuse the list of real occurrences
+            if entity.text not in occurrence_cache:
+                occurrence_cache[entity.text] = self._find_all_occurrences(text, entity.text)
 
-            # Verify the text matches
-            actual_text = text[entity.start:entity.end]
-            if actual_text != entity.text:
-                # Try to find correct position
-                idx = text.find(entity.text)
-                if idx >= 0:
-                    entity = PIIEntity(
-                        text=entity.text,
-                        pii_type=entity.pii_type,
-                        start=idx,
-                        end=idx + len(entity.text),
-                        confidence=entity.confidence,
-                        detection_method=entity.detection_method
-                    )
-                else:
-                    # Use fuzzy match - the text might be slightly different
-                    logger.debug(f"Text mismatch: expected '{entity.text}', found '{actual_text}'")
+            occurrences = occurrence_cache[entity.text]
+            if not occurrences:
+                logger.warning(f"Could not find entity text in source: {entity.text}")
+                continue
 
-            validated.append(entity)
+            # Check if the GPT-4o position is already correct
+            actual_text = text[entity.start:entity.end] if 0 <= entity.start < entity.end <= len(text) else ""
+            if actual_text == entity.text:
+                validated.append(entity)
+                continue
 
-        return validated
+            # Find the nearest real occurrence to the GPT-4o position
+            nearest = min(occurrences, key=lambda pos: abs(pos - entity.start))
+            validated.append(PIIEntity(
+                text=entity.text,
+                pii_type=entity.pii_type,
+                start=nearest,
+                end=nearest + len(entity.text),
+                confidence=entity.confidence,
+                detection_method=entity.detection_method,
+            ))
+
+        # Deduplicate: keep one entity per unique (start, end, type) span
+        seen: Dict[tuple, PIIEntity] = {}
+        for entity in validated:
+            key = (entity.start, entity.end, entity.pii_type)
+            if key not in seen or entity.confidence > seen[key].confidence:
+                seen[key] = entity
+
+        return sorted(seen.values(), key=lambda e: e.start)
 
     def detect_batch(
         self,

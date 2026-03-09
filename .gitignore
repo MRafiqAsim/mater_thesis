@@ -55,17 +55,7 @@ Thumbs.db
 desktop.ini
 
 # Data directories (large files - don't commit)
-data/bronze/
-data/silver/
-data/gold/
-data/input/pst/
-data/input/documents/
-
-# Keep data structure but ignore contents
-!data/
-!data/input/
-!data/README.md
-!data/evaluation/
+data/
 
 # Logs
 *.log
