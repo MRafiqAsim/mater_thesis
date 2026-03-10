@@ -297,8 +297,9 @@ class LLMKGExtractor(KGEntityExtractor):
             import json
             client = self._get_client()
 
-            from prompt_loader import get_prompt
-            prompt = get_prompt("silver", "kg_entity_extraction", "user_prompt").format(
+            from prompt_loader import get_prompt, format_prompt
+            prompt = format_prompt(
+                get_prompt("silver", "kg_entity_extraction", "user_prompt"),
                 entity_types=list(self.entity_types),
                 text=text[:3000],
             )

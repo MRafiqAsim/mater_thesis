@@ -25,6 +25,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Load .env before anything else
+from dotenv import load_dotenv
+load_dotenv()
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -46,7 +50,8 @@ logger = logging.getLogger(__name__)
 def extract_pst_to_bronze(
     pst_path: str,
     bronze_path: str,
-    attachment_dir: Optional[str] = None
+    attachment_dir: Optional[str] = None,
+    max_emails: Optional[int] = None
 ) -> dict:
     """
     Extract emails from PST file to Bronze layer.
@@ -77,7 +82,7 @@ def extract_pst_to_bronze(
 
     # Extract and load
     try:
-        emails = extractor.extract(pst_path, progress_callback=progress)
+        emails = extractor.extract(pst_path, progress_callback=progress, max_emails=max_emails)
         stats = loader.load_emails_batch(emails, batch_size=100)
         loader.save_metadata()
 
@@ -308,7 +313,8 @@ def run_full_pipeline(
     docs_path: Optional[str] = None,
     output_path: str = "./data",
     ground_truth_path: Optional[str] = None,
-    chunk_size: int = 512
+    chunk_size: int = 512,
+    max_emails: Optional[int] = None
 ) -> dict:
     """
     Run the full ingestion and anonymization pipeline.
@@ -338,7 +344,7 @@ def run_full_pipeline(
         logger.info("=" * 60)
         logger.info("STEP 1: PST Extraction → Bronze Layer")
         logger.info("=" * 60)
-        pst_stats = extract_pst_to_bronze(pst_path, bronze_path)
+        pst_stats = extract_pst_to_bronze(pst_path, bronze_path, max_emails=max_emails)
         all_stats["bronze_stats"]["pst"] = pst_stats
 
         # Step 1.5: Classify all attachments (extract text, classify, move, enrich)
@@ -481,6 +487,14 @@ Examples:
         help="Remove legacy duplicate storage (32-char dirs, old cache)"
     )
 
+    # Limit
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of emails to extract (default: all)"
+    )
+
     # Other options
     parser.add_argument(
         "--verbose", "-v",
@@ -541,7 +555,8 @@ Examples:
                 docs_path=args.documents,
                 output_path=args.output,
                 ground_truth_path=args.evaluate,
-                chunk_size=args.chunk_size
+                chunk_size=args.chunk_size,
+                max_emails=args.limit
             )
 
         print("\n" + "=" * 60)

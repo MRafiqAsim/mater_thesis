@@ -32,6 +32,10 @@ import os
 import sys
 from pathlib import Path
 
+# Load .env before anything else
+from dotenv import load_dotenv
+load_dotenv()
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -217,6 +221,13 @@ Examples:
     )
 
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of threads to process (default: all)"
+    )
+
+    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Verbose output"
@@ -254,8 +265,11 @@ Examples:
             identity_registry.save(str(registry_path))
             print(f"  Saved to {registry_path}")
 
-    # Determine silver output path (always mode-specific for isolation)
-    silver_path = f"{args.silver}_{args.mode}"
+    # Determine silver output path (mode-specific for isolation)
+    if args.silver.endswith(f"_{args.mode}"):
+        silver_path = args.silver
+    else:
+        silver_path = f"{args.silver}_{args.mode}"
 
     print("\n" + "=" * 60)
     print("THREAD-AWARE EMAIL PROCESSING WITH PATHRAG")
@@ -315,7 +329,7 @@ Examples:
     print("\nProcessing...")
     print("-" * 40)
 
-    stats = processor.process(progress_callback=progress)
+    stats = processor.process(progress_callback=progress, max_threads=args.limit)
 
     # Print results
     print("\n" + "=" * 60)

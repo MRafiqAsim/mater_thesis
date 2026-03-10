@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-from prompt_loader import get_prompt, get_section
+from prompt_loader import get_prompt, get_section, format_prompt
 
 from .retrieval_tools import RetrievalToolkit, ToolResult
 from .react_retriever import ReActRetriever, ReActResult
@@ -582,7 +582,8 @@ class HybridRetriever:
 
         # Format prompts from config/prompts.json
         system_prompt = get_prompt("retrieval", "generation", "system_prompt", "You are a helpful assistant.")
-        user_prompt = get_prompt("retrieval", "generation", "user_prompt", "Context:\n{context}\n\nQuestion: {question}").format(
+        user_prompt = format_prompt(
+            get_prompt("retrieval", "generation", "user_prompt", "Context:\n{context}\n\nQuestion: {question}"),
             context=context,
             question=query,
         )

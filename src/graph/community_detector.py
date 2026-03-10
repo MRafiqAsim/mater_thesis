@@ -387,8 +387,9 @@ class CommunityDetector:
 
         relationships_text = "\n".join(relationships[:15])
 
-        from prompt_loader import get_prompt
-        prompt = get_prompt("gold", "community_summary", "user_prompt").format(
+        from prompt_loader import get_prompt, format_prompt
+        prompt = format_prompt(
+            get_prompt("gold", "community_summary", "user_prompt"),
             entity_count=community.entity_count,
             entities_text=entities_text,
             relationships_text=relationships_text,

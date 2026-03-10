@@ -515,7 +515,9 @@ class GoldRAGRetriever:
     ) -> tuple[str, bool, Optional[str]]:
         """Generate answer using Azure OpenAI."""
         system_prompt = get_prompt("retrieval", "simplerag_generation", "system_prompt")
-        user_prompt = get_prompt("retrieval", "simplerag_generation", "user_prompt").format(
+        from prompt_loader import format_prompt
+        user_prompt = format_prompt(
+            get_prompt("retrieval", "simplerag_generation", "user_prompt"),
             context=context,
             question=question,
         )

@@ -64,6 +64,25 @@ def get_prompt(layer: str, section: str, key: str, default: Any = None) -> Any:
     return data.get(layer, {}).get(section, {}).get(key, default)
 
 
+def format_prompt(template: str, **kwargs) -> str:
+    """
+    Safely format a prompt template, preserving literal braces.
+
+    Replaces only {key} placeholders that match kwargs keys.
+    All other braces (including JSON examples) are left untouched.
+    """
+    import re
+
+    # First, escape ALL braces
+    safe = template.replace("{", "{{").replace("}", "}}")
+
+    # Then un-escape only the known kwargs placeholders
+    for key in kwargs:
+        safe = safe.replace("{{" + key + "}}", "{" + key + "}")
+
+    return safe.format(**kwargs)
+
+
 def get_section(layer: str, section: str) -> dict:
     """Get an entire prompt section."""
     data = _load()

@@ -302,8 +302,9 @@ class LLMRelationshipExtractor(RelationshipExtractor):
                 for e in entities[:self.max_entities_per_call]
             ])
 
-            from prompt_loader import get_prompt
-            prompt = get_prompt("silver", "kg_relationship_extraction", "user_prompt").format(
+            from prompt_loader import get_prompt, format_prompt
+            prompt = format_prompt(
+                get_prompt("silver", "kg_relationship_extraction", "user_prompt"),
                 text=text[:3000],
                 entity_list=entity_list,
             )

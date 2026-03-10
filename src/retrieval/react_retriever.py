@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from prompt_loader import get_prompt
+from prompt_loader import get_prompt, format_prompt
 
 from .retrieval_tools import RetrievalToolkit, ToolResult
 
@@ -247,7 +247,8 @@ class ReActRetriever:
             )
 
         # Build system prompt from config/prompts.json
-        system_prompt = get_prompt("retrieval", "react_agent", "system_prompt", "You are a retrieval agent.").format(
+        system_prompt = format_prompt(
+            get_prompt("retrieval", "react_agent", "system_prompt", "You are a retrieval agent."),
             tool_descriptions=self._build_tool_descriptions()
         )
 

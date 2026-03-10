@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import httpx
 
 from .pii_detector import PIIEntity, PIIType
-from prompt_loader import get_prompt
+from prompt_loader import get_prompt, format_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class OpenAIPIIDetector:
                 suffix = get_prompt("silver", "pii_detection", "known_people_suffix", "")
                 system_prompt += suffix.format(known_names=", ".join(known_names))
 
-            user_prompt = get_prompt("silver", "pii_detection", "user_prompt").format(text=text)
+            user_prompt = format_prompt(get_prompt("silver", "pii_detection", "user_prompt"), text=text)
 
             # Call OpenAI API
             response = self.client.chat.completions.create(
@@ -349,7 +349,8 @@ class OpenAIAnonymizer:
             return self._replacement_cache[cache_key]
 
         try:
-            prompt = get_prompt("silver", "synthetic_replacement", "user_prompt").format(
+            prompt = format_prompt(
+                get_prompt("silver", "synthetic_replacement", "user_prompt"),
                 pii_type=entity.pii_type.value,
                 original_text=entity.text,
             )

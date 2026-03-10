@@ -576,7 +576,8 @@ class ThreadAwareProcessor:
 
     def process(
         self,
-        progress_callback: Optional[Callable[[int, str], None]] = None
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        max_threads: Optional[int] = None
     ) -> Dict[str, int]:
         """
         Process Bronze layer emails into thread-aware Silver layer.
@@ -596,6 +597,10 @@ class ThreadAwareProcessor:
         if not threads:
             logger.warning("No emails found to process")
             return self.stats
+
+        if max_threads:
+            threads = threads[:max_threads]
+            logger.info(f"Limited to {len(threads)} threads (--limit {max_threads})")
 
         logger.info(f"Found {len(threads)} threads")
 
