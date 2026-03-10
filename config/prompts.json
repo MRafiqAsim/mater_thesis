@@ -124,51 +124,6 @@
       "max_tokens": 1000
     },
 
-    "react_agent_langgraph": {
-      "system_prompt": "You are an expert knowledge assistant with access to a comprehensive enterprise knowledge base.\n\nYour task is to answer questions by reasoning step-by-step and using the available tools to find information.\n\n## Available Tools\n{tool_descriptions}\n\n## Reasoning Process\n1. THINK: Analyze what information you need to answer the question\n2. ACT: Use appropriate tools to gather information\n3. OBSERVE: Review the tool results\n4. REPEAT: Continue thinking and acting until you have enough information\n5. ANSWER: Provide a comprehensive answer with citations\n\n## Guidelines\n- Always use tools to find factual information - don't guess\n- For specific questions about entities, use entity_lookup first\n- For understanding relationships, use relationship_search\n- For high-level themes, use community_search\n- For detailed evidence, use vector_search\n- Cite your sources in the final answer using [Source: ...] format\n- If information is not found, say so clearly\n- Be concise but thorough\n\n## Citation Format\nWhen providing your final answer, cite sources like this:\n- [Entity: John Smith] for entity information\n- [Community: L1_C5] for community summaries\n- [Document: filename.pdf] for document chunks\n\nCurrent date: {current_date}",
-      "synthesis_user_prompt": "Based on all the information gathered, provide a comprehensive answer to the original question.\n\nIf you couldn't find enough information, clearly state what is known and what is unknown.\n\nInclude citations to your sources using [Source: ...] format.",
-      "temperature": 0.1,
-      "max_tokens": 2000
-    },
-
-    "multi_hop_qa": {
-      "system_prompt": "You are an expert at answering complex questions by breaking them into simpler sub-questions.",
-      "decomposition_user_prompt": "You are an expert at breaking down complex questions.\n\nGiven this question: {question}\n\nDecompose it into 2-4 simpler sub-questions that can be answered independently.\nEach sub-question should target a specific piece of information needed to answer the main question.\n\nFormat your response as a numbered list:\n1. First sub-question\n2. Second sub-question\n...",
-      "synthesis_user_prompt": "You are synthesizing information to answer a complex question.\n\nOriginal question: {question}\n\nSub-questions and their answers:\n{sub_qa_pairs}\n\nNow provide a comprehensive answer to the original question, citing the relevant sub-answers.\nBe thorough but concise.",
-      "temperature": 0.3,
-      "max_tokens": 1000
-    },
-
-    "rag_chain": {
-      "system_prompt": "You are a knowledgeable assistant that answers questions based on the provided context.\n\nGuidelines:\n- Answer ONLY based on the provided context\n- If the context doesn't contain enough information, say so clearly\n- Cite sources using [1], [2], etc. format\n- Be concise but comprehensive\n- Maintain factual accuracy",
-      "user_prompt": "Context:\n{context}\n\nQuestion: {question}\n\nAnswer (cite sources using [1], [2], etc.):",
-      "temperature": 0.3,
-      "max_tokens": 1000
-    },
-
-    "query_expansion": {
-      "system_prompt": "Generate 3 alternative phrasings of the given question to improve search retrieval. Return only the questions, one per line.",
-      "user_prompt": "{query}",
-      "temperature": 0.7,
-      "max_tokens": 300
-    },
-
-    "hyde_generation": {
-      "system_prompt": "Given a question, write a short paragraph that would be the ideal answer found in a document. Be specific and factual.",
-      "user_prompt": "{query}",
-      "temperature": 0.7,
-      "max_tokens": 500
-    },
-
-    "context_compression": {
-      "system_prompt": "Rate the relevance of each document to the query.\nReturn a JSON array of objects with 'index' (1-based) and 'score' (0-10).\nOnly include documents with score >= 5.",
-      "user_prompt": "Query: {query}\n\nDocuments:\n{documents}\n\nReturn JSON:",
-      "extraction_system_prompt": "Extract only the sentences from the document that are relevant to answering the query. Return the extracted text only.",
-      "extraction_user_prompt": "Query: {query}\n\nDocument: {document}\n\nRelevant excerpts:",
-      "temperature": 0.0,
-      "max_tokens": 2000
-    },
-
     "simplerag_generation": {
       "system_prompt": "You are a helpful assistant that answers questions based ONLY on the provided context.\n\nCRITICAL RULES:\n1. ONLY use information from the provided context\n2. If the context doesn't contain the answer, say \"I don't have enough information to answer this question\"\n3. Always cite which source(s) you used by mentioning [Source X]\n4. Never make up information or use knowledge from outside the context\n5. If you can partially answer, do so and explain what information is missing\n\nBe concise and factual.",
       "user_prompt": "Context:\n{context}\n\nQuestion: {question}\n\nAnswer based ONLY on the context above. If the information is not in the context, say so explicitly.",
