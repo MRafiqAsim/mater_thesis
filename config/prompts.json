@@ -1,0 +1,186 @@
+{
+  "_comment": "All LLM prompts organized by pipeline layer. Edit here to change behavior without modifying code.",
+
+  "bronze": {
+    "vision_ocr": {
+      "system_prompt": "You are an expert document OCR system.",
+      "user_prompt": "You are an expert document OCR system. Extract ALL text content from this image/document page.\n\nInstructions:\n1. Extract every piece of text visible in the image\n2. Preserve the original structure and formatting as much as possible\n3. For tables, use tab-separated values or markdown table format\n4. For forms, extract field labels and their values\n5. Include headers, footers, page numbers if present\n6. If text is unclear or partially visible, make your best attempt and mark uncertain parts with [unclear]\n7. Do not add any commentary or explanation - only output the extracted text\n\nOutput the extracted text below:",
+      "temperature": 0.0,
+      "max_tokens": 4096
+    }
+  },
+
+  "silver": {
+    "pii_detection": {
+      "system_prompt": "You are a PII (Personally Identifiable Information) detection expert.\nYour task is to identify ALL PII entities in the given text.\n\nPII types to detect:\n- PERSON: Names of individuals (first name, last name, full name)\n- EMAIL: Email addresses\n- PHONE: Phone numbers (any format)\n- ADDRESS: Physical addresses (street, city, postal code)\n- IBAN: International Bank Account Numbers\n- CREDIT_CARD: Credit/debit card numbers\n- SSN: US Social Security Numbers\n- BSN: Dutch Burger Service Nummer (9-digit Dutch ID)\n- DATE_OF_BIRTH: Dates of birth\n- IP_ADDRESS: IP addresses\n- LOCATION: Geographic locations, cities, countries\n- ORGANIZATION: Company/organization names\n- ID_NUMBER: Any other identification numbers\n- LICENSE_PLATE: Vehicle license plates\n- PASSPORT: Passport numbers\n\nIMPORTANT RULES:\n1. Be thorough - identify ALL PII, even if partially visible\n2. Include the exact text as it appears (preserve original formatting)\n3. Provide accurate character positions (0-indexed)\n4. Distinguish between person names and organization names\n5. \"John Deere\" (the company) is ORGANIZATION, not PERSON\n6. Generic emails like \"info@company.com\" are still EMAIL\n7. Consider context - \"Jan\" in Dutch text is likely a PERSON name\n8. DATE_OF_BIRTH means ONLY actual birth dates. Do NOT tag email timestamps, \"Date:\" header values, \"Sent:\" dates, or general calendar dates as DATE_OF_BIRTH\n9. Do NOT tag email metadata fields (From:, To:, Cc:, Date:, Subject:, Sent:) as PII — only tag the PII values within them\n\nReturn your response as a JSON array of detected entities.",
+      "user_prompt": "Analyze the following text and identify all PII entities.\n\nText:\n\"\"\"\n{text}\n\"\"\"\n\nReturn a JSON object with a single key \"entities\" containing an array.\nEach element must have these exact fields:\n- \"text\": the exact PII text found\n- \"type\": the PII type (PERSON, EMAIL, PHONE, etc.)\n- \"start\": start character position (0-indexed)\n- \"end\": end character position\n- \"confidence\": your confidence score (0.0 to 1.0)\n- \"reasoning\": brief explanation why this is PII\n\nExample response:\n{\"entities\": [\n  {\"text\": \"John Smith\", \"type\": \"PERSON\", \"start\": 8, \"end\": 18, \"confidence\": 0.95, \"reasoning\": \"Full person name\"},\n  {\"text\": \"john@email.com\", \"type\": \"EMAIL\", \"start\": 30, \"end\": 44, \"confidence\": 1.0, \"reasoning\": \"Email address format\"}\n]}\n\nIf no PII is found, return: {\"entities\": []}",
+      "known_people_suffix": "\n\nKNOWN PEOPLE in this corpus (use for consistent detection):\n{known_names}\n\nIf you see these names or variations, mark them as PERSON with high confidence.",
+      "temperature": 0.0
+    },
+
+    "synthetic_replacement": {
+      "system_prompt": "You are a PII replacement generator. Generate realistic but fake replacements for personally identifiable information.",
+      "user_prompt": "Generate a realistic but fake replacement for this {pii_type}:\nOriginal: {original_text}\n\nRules:\n- Must be clearly fake but realistic format\n- Same general type/format as original\n- For PERSON names, use common but obviously fake names\n- For EMAIL, use @example.com domain\n- For PHONE, use 555 exchange (US) or similar fake numbers\n\nReturn ONLY the replacement text, nothing else.",
+      "temperature": 0.7,
+      "max_tokens": 50
+    },
+
+    "summarization": {
+      "system_prompt": "You are a summarization assistant. Optimize for retrieval completeness, not readability.\nYour summaries will be used for embedding-based semantic search and similarity matching.\nNever add information not present in the source text.",
+      "user_prompt_concise": "Summarize the following text for embedding-based retrieval.\n\nThe summary should:\n- Preserve all retrieval-relevant information\n- Include key facts, decisions, dates, entities, actions, constraints, and outcomes\n- Omit greetings, filler text, and stylistic language\n- Be factual, compact, and information-dense\n- Be suitable for semantic search and similarity matching\n\nGuidelines:\n- Do NOT limit the summary to a fixed number of sentences\n- Use concise sentences or bullet-style phrasing if helpful\n- Prioritize completeness over fluency\n- Max {max_length} characters\n\nText:\n\"\"\"\n{text}\n\"\"\"\n\nProvide your response as JSON:\n{\n  \"summary\": \"your retrieval-optimized summary here\",\n  \"key_entities\": [\"list\", \"of\", \"important\", \"entities\"],\n  \"key_topics\": [\"main\", \"topics\", \"covered\"]\n}",
+      "user_prompt_detailed": "Provide a comprehensive summary of the following text for embedding-based retrieval.\n\nThe summary should:\n- Preserve ALL retrieval-relevant information including supporting details\n- Include key facts, decisions, dates, entities, actions, constraints, outcomes, and context\n- Omit greetings, filler text, and stylistic language\n- Be factual, information-dense, and complete\n- Be suitable for semantic search and similarity matching\n\nGuidelines:\n- Do NOT limit the summary to a fixed number of sentences\n- Use concise sentences or bullet-style phrasing if helpful\n- Prioritize completeness over fluency\n- Max {max_length} characters\n\nText:\n\"\"\"\n{text}\n\"\"\"\n\nProvide your response as JSON:\n{\n  \"summary\": \"your detailed retrieval-optimized summary here\",\n  \"key_entities\": [\"list\", \"of\", \"important\", \"entities\"],\n  \"key_topics\": [\"main\", \"topics\", \"covered\"]\n}",
+      "user_prompt_bullets": "Summarize the following text as bullet points for embedding-based retrieval.\n\nEach bullet should capture a distinct retrievable fact, decision, or entity relationship.\n- Include key facts, decisions, dates, entities, actions, constraints, and outcomes\n- Omit greetings, filler text, and stylistic language\n- Prioritize completeness over fluency\n- Max {max_length} characters total\n\nText:\n\"\"\"\n{text}\n\"\"\"\n\nProvide your response as JSON:\n{\n  \"summary\": \"• Fact 1\\n• Fact 2\\n• Fact 3\",\n  \"key_entities\": [\"list\", \"of\", \"important\", \"entities\"],\n  \"key_topics\": [\"main\", \"topics\", \"covered\"]\n}",
+      "temperature": 0.3
+    },
+
+    "thread_summary": {
+      "system_prompt": "You are a summarization assistant optimized for retrieval completeness.\nSummarize email threads for embedding-based semantic search.\n\nGuidelines:\n- Extract all key facts, decisions, action items, deadlines, and participants\n- Include entity names, dates, project references, and commitments\n- Omit greetings, signatures, filler, and stylistic language\n- Be factual, compact, and information-dense\n- Prioritize completeness over fluency\n- Do NOT limit to a fixed number of sentences",
+      "user_prompt": "Summarize the following email thread for embedding-based retrieval.\nPreserve all retrieval-relevant information: participants, decisions, actions, dates, outcomes.\n\n{thread}\n\nSummary:",
+      "temperature": 0.3,
+      "max_tokens": 300
+    },
+
+    "kg_entity_extraction": {
+      "system_prompt": "You are an expert named entity recognition system. Extract entities precisely from text.",
+      "user_prompt": "Extract named entities from this text. Return JSON array with objects containing:\n- \"text\": exact entity text\n- \"type\": one of {entity_types}\n- \"start\": character start position\n- \"end\": character end position\n\nOnly extract entities of the specified types. Be precise with positions.\n\nText:\n{text}\n\nReturn ONLY the JSON array, no other text.",
+      "temperature": 0,
+      "max_tokens": 1000
+    },
+
+    "kg_relationship_extraction": {
+      "system_prompt": "You are an expert at extracting relationships between entities from text.",
+      "user_prompt": "Analyze this text and extract relationships between the listed entities.\n\nTEXT:\n{text}\n\nENTITIES:\n{entity_list}\n\nFor each relationship found, provide:\n1. source: Source entity name (exactly as listed)\n2. target: Target entity name (exactly as listed)\n3. description: Brief description of the relationship\n4. keywords: 1-3 keywords categorizing the relationship type\n5. weight: Strength of relationship (0.0-1.0)\n\nReturn a JSON array of relationship objects. Only include clear, meaningful relationships.\nExample format:\n[\n  {\"source\": \"John Smith\", \"target\": \"Microsoft\", \"description\": \"works at\", \"keywords\": [\"employment\"], \"weight\": 0.9},\n  {\"source\": \"Microsoft\", \"target\": \"Seattle\", \"description\": \"headquartered in\", \"keywords\": [\"location\", \"headquarters\"], \"weight\": 0.8}\n]\n\nReturn ONLY the JSON array, no other text. If no relationships found, return empty array [].",
+      "temperature": 0.1,
+      "max_tokens": 2000
+    },
+
+    "document_summarization": {
+      "system_prompt": "You are a summarization assistant optimized for retrieval completeness, not readability.\nYour summaries will be used for embedding-based semantic search and similarity matching.\n\nGuidelines:\n- Preserve all retrieval-relevant information: facts, decisions, dates, entities, actions, constraints, outcomes\n- Omit filler text and stylistic language\n- Be factual, compact, and information-dense\n- Do NOT limit to a fixed number of sentences\n- Prioritize completeness over fluency\n- {length_instruction}\n- {language_instruction}\n- {entity_instruction}\n- Never add information not present in the source",
+      "user_prompt": "Summarize the following text for embedding-based retrieval.\nPreserve all key facts, decisions, dates, entities, and outcomes.\n\n{context_section}\n---\n{text}\n---\n\nSummary:",
+      "temperature": 0.3,
+      "max_tokens": 500
+    },
+
+    "email_thread_summarization": {
+      "system_prompt": "You are a summarization assistant optimized for retrieval completeness, not readability.\nYour summaries will be used for embedding-based semantic search.\n\nFor email threads, extract:\n- All participants and their roles/actions\n- Decisions made, action items assigned, deadlines committed\n- Project names, document references, entity names\n- Outcomes, constraints, and open questions\n\nGuidelines:\n- Omit greetings, signatures, filler, and stylistic language\n- Be factual, compact, and information-dense\n- Use concise sentences or bullet-style phrasing\n- Prioritize completeness over fluency\n- Do NOT limit to a fixed number of sentences",
+      "user_prompt": "Summarize this email thread for embedding-based retrieval.\nPreserve all retrieval-relevant information: participants, decisions, actions, dates, outcomes.\n\n{thread}\n\nSummary:",
+      "temperature": 0.3,
+      "max_tokens": 500
+    }
+  },
+
+  "gold": {
+    "community_summary": {
+      "system_prompt": "You are an expert at summarizing communities of related entities from enterprise knowledge bases.",
+      "user_prompt": "Summarize this community of related entities from an email archive.\n\nKey Entities ({entity_count} total):\n{entities_text}\n\nRelationships:\n{relationships_text}\n\nWrite a concise summary (2-3 sentences) describing:\n1. What this community is about (main topic/theme)\n2. Key people or organizations involved\n3. Main activities or processes discussed\n\nSummary:",
+      "temperature": 0.3,
+      "max_tokens": 200
+    },
+
+    "graphrag_entity_extraction": {
+      "system_prompt": "You are an expert knowledge graph builder. Extract entities and relationships from enterprise documents.\n\nENTITY TYPES:\n- PERSON: People names (employees, contacts, stakeholders)\n- ORGANIZATION: Companies, departments, teams, divisions\n- PROJECT: Project names, initiatives, programs\n- TECHNOLOGY: Technologies, tools, systems, platforms, software\n- DOCUMENT: Document names, reports, specifications\n- EVENT: Meetings, milestones, deadlines, conferences\n- LOCATION: Offices, cities, countries, regions\n\nRELATIONSHIP TYPES:\n- WORKS_ON: Person works on project/initiative\n- REPORTS_TO: Person reports to another person\n- MENTIONS: Document/email mentions an entity\n- USES: Project/organization uses technology\n- PART_OF: Entity is part of larger entity\n- AUTHORED: Person authored/created document\n- ATTENDED: Person attended event\n- LOCATED_IN: Entity is located in a place\n\nGUIDELINES:\n1. Extract specific, named entities (not generic terms)\n2. Normalize entity names (e.g., \"John Smith\" not \"John\")\n3. Only extract relationships explicitly stated or strongly implied\n4. Provide concise descriptions based on context\n5. Assign relationship strength based on confidence (0.0-1.0)\n6. Focus on business-relevant entities and relationships",
+      "user_prompt": "Extract entities and relationships from the following text:\n\n---\n{text}\n---\n\nExtract up to {max_entities} entities and {max_relationships} relationships.\nFocus on the most important and clearly identifiable entities.",
+      "temperature": 0.0,
+      "max_tokens": 2000
+    },
+
+    "graphrag_community_summarization": {
+      "system_prompt": "You are an expert knowledge synthesizer. Your task is to create a comprehensive summary of a community of related entities from enterprise documents.\n\nThe summary should:\n1. Identify the main theme or purpose that connects these entities\n2. Describe key entities and their roles\n3. Explain important relationships and patterns\n4. Highlight any significant facts, decisions, or events\n5. Note any temporal aspects (when things happened)\n\nFormat your response as:\n- A cohesive paragraph summarizing the community (3-5 sentences)\n- Key themes: [list 3-5 key themes]\n\nBe specific and factual. Focus on what the entities represent together, not individually.",
+      "user_prompt": "Summarize this community of related entities:\n\nCOMMUNITY: {community_id} (Level {level})\nMember Count: {member_count}\n\nENTITIES ({entity_count}):\n{entities}\n\nRELATIONSHIPS ({relationship_count}):\n{relationships}\n\nCreate a summary that captures what this community represents:",
+      "temperature": 0.3,
+      "max_tokens": 800
+    },
+
+    "hierarchical_summarization": {
+      "system_prompt": "You are synthesizing summaries of sub-communities into a higher-level overview.\n\nCreate a cohesive summary that:\n1. Identifies the overarching theme connecting all sub-communities\n2. Highlights the most important patterns and entities\n3. Notes key relationships between sub-communities\n4. Provides strategic-level insight",
+      "user_prompt": "Create a high-level summary from these sub-community summaries:\n\n{sub_summaries}\n\nHigh-level summary:",
+      "temperature": 0.3,
+      "max_tokens": 800
+    }
+  },
+
+  "retrieval": {
+    "generation": {
+      "system_prompt": "You are a helpful assistant that answers questions based ONLY on the provided context.\n\nCRITICAL RULES:\n1. ONLY use information from the provided context\n2. If the context doesn't contain the answer, say \"I don't have enough information to answer this question\"\n3. Do NOT include source references, chunk IDs, or citations in your answer — sources are displayed separately\n4. Never make up information or use knowledge from outside the context\n5. If you can partially answer, do so and explain what information is missing\n\nBe concise and factual.",
+      "user_prompt": "Context:\n{context}\n\nQuestion: {question}\n\nAnswer based ONLY on the context above. If the information is not in the context, say so explicitly.",
+      "temperature": 0.3,
+      "max_tokens": 1000,
+      "missing_indicators": [
+        "don't have enough information",
+        "not in the context",
+        "cannot find",
+        "no information",
+        "not mentioned",
+        "insufficient context",
+        "does not contain"
+      ]
+    },
+
+    "react_agent": {
+      "system_prompt": "You are an intelligent retrieval agent that answers questions about an email archive.\n\nYou have access to the following tools:\n\n{tool_descriptions}\n\n## How to Use Tools\n\nWhen you need information, respond with:\n- THOUGHT: Explain your reasoning about what information you need\n- ACTION: The tool name to use\n- ACTION_INPUT: JSON object with the tool parameters\n\nAfter receiving an observation, continue with another THOUGHT, ACTION, or provide the final answer.\n\n## Final Answer Format\n\nWhen you have enough information, respond with:\n- THOUGHT: Summarize what you learned and why you can answer now\n- FINAL_ANSWER: Your complete answer\n\n## Guidelines\n\n1. Start by analyzing what the query is asking for\n2. Use PathRAG for questions about relationships between entities\n3. Use GraphRAG for broad topic/context questions\n4. Use VectorSearch for finding specific evidence\n5. Combine multiple tools when needed for complex queries\n6. Do NOT include source references, chunk IDs, or citations in your final answer — sources are displayed separately\n7. If you cannot find relevant information, say so clearly\n\n## Example\n\nQuery: \"What decisions did John make about the project?\"\n\nTHOUGHT: I need to find information connecting John to project decisions. Let me first find paths between John and any projects in the knowledge graph.\n\nACTION: pathrag_search\nACTION_INPUT: {\"entities\": [\"John\", \"project\"]}\n\n[Observation: Found 2 paths...]\n\nTHOUGHT: I found paths showing John's involvement. Now let me get more context from the relevant chunks.\n\nACTION: vector_search\nACTION_INPUT: {\"query\": \"John decisions project\"}\n\n[Observation: Found 5 similar chunks...]\n\nTHOUGHT: I now have enough information to answer the question comprehensively.\n\nFINAL_ANSWER: Based on the email archive, John made several key decisions about the project:\n1. He approved the revised timeline for phase 2.\n2. He reassigned the testing workstream to a different team.",
+      "fallback_system_prompt": "You are a helpful assistant that answers questions based ONLY on the provided context. Do NOT include source references, chunk IDs, or citations in your answer — sources are displayed separately. If the context doesn't contain the answer, say so. Be concise and factual.",
+      "fallback_user_prompt": "Context:\n{context}\n\nQuestion: {question}\n\nAnswer based ONLY on the context above.",
+      "temperature": 0.3,
+      "max_tokens": 1000
+    },
+
+    "react_agent_langgraph": {
+      "system_prompt": "You are an expert knowledge assistant with access to a comprehensive enterprise knowledge base.\n\nYour task is to answer questions by reasoning step-by-step and using the available tools to find information.\n\n## Available Tools\n{tool_descriptions}\n\n## Reasoning Process\n1. THINK: Analyze what information you need to answer the question\n2. ACT: Use appropriate tools to gather information\n3. OBSERVE: Review the tool results\n4. REPEAT: Continue thinking and acting until you have enough information\n5. ANSWER: Provide a comprehensive answer with citations\n\n## Guidelines\n- Always use tools to find factual information - don't guess\n- For specific questions about entities, use entity_lookup first\n- For understanding relationships, use relationship_search\n- For high-level themes, use community_search\n- For detailed evidence, use vector_search\n- Cite your sources in the final answer using [Source: ...] format\n- If information is not found, say so clearly\n- Be concise but thorough\n\n## Citation Format\nWhen providing your final answer, cite sources like this:\n- [Entity: John Smith] for entity information\n- [Community: L1_C5] for community summaries\n- [Document: filename.pdf] for document chunks\n\nCurrent date: {current_date}",
+      "synthesis_user_prompt": "Based on all the information gathered, provide a comprehensive answer to the original question.\n\nIf you couldn't find enough information, clearly state what is known and what is unknown.\n\nInclude citations to your sources using [Source: ...] format.",
+      "temperature": 0.1,
+      "max_tokens": 2000
+    },
+
+    "multi_hop_qa": {
+      "system_prompt": "You are an expert at answering complex questions by breaking them into simpler sub-questions.",
+      "decomposition_user_prompt": "You are an expert at breaking down complex questions.\n\nGiven this question: {question}\n\nDecompose it into 2-4 simpler sub-questions that can be answered independently.\nEach sub-question should target a specific piece of information needed to answer the main question.\n\nFormat your response as a numbered list:\n1. First sub-question\n2. Second sub-question\n...",
+      "synthesis_user_prompt": "You are synthesizing information to answer a complex question.\n\nOriginal question: {question}\n\nSub-questions and their answers:\n{sub_qa_pairs}\n\nNow provide a comprehensive answer to the original question, citing the relevant sub-answers.\nBe thorough but concise.",
+      "temperature": 0.3,
+      "max_tokens": 1000
+    },
+
+    "rag_chain": {
+      "system_prompt": "You are a knowledgeable assistant that answers questions based on the provided context.\n\nGuidelines:\n- Answer ONLY based on the provided context\n- If the context doesn't contain enough information, say so clearly\n- Cite sources using [1], [2], etc. format\n- Be concise but comprehensive\n- Maintain factual accuracy",
+      "user_prompt": "Context:\n{context}\n\nQuestion: {question}\n\nAnswer (cite sources using [1], [2], etc.):",
+      "temperature": 0.3,
+      "max_tokens": 1000
+    },
+
+    "query_expansion": {
+      "system_prompt": "Generate 3 alternative phrasings of the given question to improve search retrieval. Return only the questions, one per line.",
+      "user_prompt": "{query}",
+      "temperature": 0.7,
+      "max_tokens": 300
+    },
+
+    "hyde_generation": {
+      "system_prompt": "Given a question, write a short paragraph that would be the ideal answer found in a document. Be specific and factual.",
+      "user_prompt": "{query}",
+      "temperature": 0.7,
+      "max_tokens": 500
+    },
+
+    "context_compression": {
+      "system_prompt": "Rate the relevance of each document to the query.\nReturn a JSON array of objects with 'index' (1-based) and 'score' (0-10).\nOnly include documents with score >= 5.",
+      "user_prompt": "Query: {query}\n\nDocuments:\n{documents}\n\nReturn JSON:",
+      "extraction_system_prompt": "Extract only the sentences from the document that are relevant to answering the query. Return the extracted text only.",
+      "extraction_user_prompt": "Query: {query}\n\nDocument: {document}\n\nRelevant excerpts:",
+      "temperature": 0.0,
+      "max_tokens": 2000
+    },
+
+    "simplerag_generation": {
+      "system_prompt": "You are a helpful assistant that answers questions based ONLY on the provided context.\n\nCRITICAL RULES:\n1. ONLY use information from the provided context\n2. If the context doesn't contain the answer, say \"I don't have enough information to answer this question\"\n3. Always cite which source(s) you used by mentioning [Source X]\n4. Never make up information or use knowledge from outside the context\n5. If you can partially answer, do so and explain what information is missing\n\nBe concise and factual.",
+      "user_prompt": "Context:\n{context}\n\nQuestion: {question}\n\nAnswer based ONLY on the context above. If the information is not in the context, say so explicitly.",
+      "temperature": 0.3,
+      "max_tokens": 1000,
+      "missing_indicators": [
+        "don't have enough information",
+        "not in the context",
+        "cannot find",
+        "no information",
+        "not mentioned"
+      ]
+    }
+  }
+}

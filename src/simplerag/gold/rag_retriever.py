@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, asdict
 import numpy as np
 from openai import AsyncAzureOpenAI
 
+from prompt_loader import get_prompt
 from ..silver.processor import SilverRecord
 from ..utils.lineage import LineageTracker
 from ..utils.config import SimpleRAGConfig
@@ -513,23 +514,11 @@ class GoldRAGRetriever:
         context: str
     ) -> tuple[str, bool, Optional[str]]:
         """Generate answer using Azure OpenAI."""
-        system_prompt = """You are a helpful assistant that answers questions based ONLY on the provided context.
-
-CRITICAL RULES:
-1. ONLY use information from the provided context
-2. If the context doesn't contain the answer, say "I don't have enough information to answer this question"
-3. Always cite which source(s) you used by mentioning [Source X]
-4. Never make up information or use knowledge from outside the context
-5. If you can partially answer, do so and explain what information is missing
-
-Be concise and factual."""
-
-        user_prompt = f"""Context:
-{context}
-
-Question: {question}
-
-Answer based ONLY on the context above. If the information is not in the context, say so explicitly."""
+        system_prompt = get_prompt("retrieval", "simplerag_generation", "system_prompt")
+        user_prompt = get_prompt("retrieval", "simplerag_generation", "user_prompt").format(
+            context=context,
+            question=question,
+        )
 
         response = await self.openai_client.chat.completions.create(
             model=self.config.azure_openai.deployment,
@@ -537,20 +526,20 @@ Answer based ONLY on the context above. If the information is not in the context
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=1000,
-            temperature=0.3
+            max_tokens=get_prompt("retrieval", "simplerag_generation", "max_tokens", 1000),
+            temperature=get_prompt("retrieval", "simplerag_generation", "temperature", 0.3)
         )
 
         answer = response.choices[0].message.content or ""
 
         # Check grounding
-        missing_indicators = [
+        missing_indicators = get_prompt("retrieval", "simplerag_generation", "missing_indicators", [
             "don't have enough information",
             "not in the context",
             "cannot find",
             "no information",
             "not mentioned"
-        ]
+        ])
 
         is_grounded = True
         missing_info = None

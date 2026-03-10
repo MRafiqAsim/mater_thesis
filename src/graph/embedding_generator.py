@@ -246,7 +246,8 @@ class EmbeddingGenerator:
         silver_dir = Path(silver_path)
         chunk_files = []
 
-        for pattern in ["thread_chunks/*.json", "individual_chunks/*.json"]:
+        for pattern in ["thread_chunks/*.json", "individual_chunks/*.json",
+                       "attachment_chunks/knowledge/*.json"]:
             chunk_files.extend(silver_dir.glob(pattern))
 
         logger.info(f"Embedding {len(chunk_files)} chunks")

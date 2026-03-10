@@ -23,6 +23,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
+from prompt_loader import get_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,14 +58,7 @@ class RAGConfig:
     include_metadata: bool = True
 
     # Prompt settings
-    system_prompt: str = """You are a knowledgeable assistant that answers questions based on the provided context.
-
-Guidelines:
-- Answer ONLY based on the provided context
-- If the context doesn't contain enough information, say so clearly
-- Cite sources using [1], [2], etc. format
-- Be concise but comprehensive
-- Maintain factual accuracy"""
+    system_prompt: str = ""
 
 
 class AzureSearchRetriever:
@@ -156,15 +151,12 @@ class RAGChain:
             max_tokens=self.config.max_tokens,
         )
 
-        # Build prompt
+        # Build prompt from config/prompts.json
+        sys_prompt = self.config.system_prompt or get_prompt("retrieval", "rag_chain", "system_prompt")
+        user_prompt = get_prompt("retrieval", "rag_chain", "user_prompt")
         self.prompt = ChatPromptTemplate.from_messages([
-            ("system", self.config.system_prompt),
-            ("human", """Context:
-{context}
-
-Question: {question}
-
-Answer (cite sources using [1], [2], etc.):"""),
+            ("system", sys_prompt),
+            ("human", user_prompt),
         ])
 
         # Build chain
@@ -274,8 +266,8 @@ class QueryTransformer:
     def expand_query(self, query: str) -> List[str]:
         """Generate query variations."""
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "Generate 3 alternative phrasings of the given question to improve search retrieval. Return only the questions, one per line."),
-            ("human", "{query}"),
+            ("system", get_prompt("retrieval", "query_expansion", "system_prompt")),
+            ("human", get_prompt("retrieval", "query_expansion", "user_prompt")),
         ])
 
         chain = prompt | self.llm | StrOutputParser()
@@ -298,8 +290,8 @@ class QueryTransformer:
         then uses that for embedding-based search.
         """
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "Given a question, write a short paragraph that would be the ideal answer found in a document. Be specific and factual."),
-            ("human", "{query}"),
+            ("system", get_prompt("retrieval", "hyde_generation", "system_prompt")),
+            ("human", get_prompt("retrieval", "hyde_generation", "user_prompt")),
         ])
 
         chain = prompt | self.llm | StrOutputParser()
@@ -334,15 +326,8 @@ class ContextCompressor:
     ) -> List[Document]:
         """Filter documents by relevance to query."""
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """Rate the relevance of each document to the query.
-Return a JSON array of objects with 'index' (1-based) and 'score' (0-10).
-Only include documents with score >= 5."""),
-            ("human", """Query: {query}
-
-Documents:
-{documents}
-
-Return JSON:"""),
+            ("system", get_prompt("retrieval", "context_compression", "system_prompt")),
+            ("human", get_prompt("retrieval", "context_compression", "user_prompt")),
         ])
 
         # Format documents
@@ -367,12 +352,8 @@ Return JSON:"""),
     def compress_document(self, document: Document, query: str) -> Document:
         """Extract only relevant portions from document."""
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "Extract only the sentences from the document that are relevant to answering the query. Return the extracted text only."),
-            ("human", """Query: {query}
-
-Document: {document}
-
-Relevant excerpts:"""),
+            ("system", get_prompt("retrieval", "context_compression", "extraction_system_prompt")),
+            ("human", get_prompt("retrieval", "context_compression", "extraction_user_prompt")),
         ])
 
         chain = prompt | self.llm | StrOutputParser()

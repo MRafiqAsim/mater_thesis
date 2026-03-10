@@ -507,7 +507,10 @@ class RetrievalToolkit:
                         "chunk_id": chunk_id,
                         "similarity_score": score,
                         "text": chunk_data.get("text_anonymized", "")[:500],
+                        "thread_id": chunk_data.get("thread_id"),
                         "thread_subject": chunk_data.get("thread_subject"),
+                        "source_type": chunk_data.get("source_type", "email"),
+                        "source_attachment_filename": chunk_data.get("source_attachment_filename", ""),
                         "has_attachments": chunk_data.get("has_attachments", False)
                     })
 
@@ -635,6 +638,8 @@ class RetrievalToolkit:
                 "thread_participants": chunk_data.get("thread_participants", []),
                 "has_attachments": chunk_data.get("has_attachments", False),
                 "attachment_filenames": chunk_data.get("attachment_filenames", []),
+                "source_type": chunk_data.get("source_type", "email"),
+                "source_attachment_filename": chunk_data.get("source_attachment_filename", ""),
                 "kg_entities": chunk_data.get("kg_entities", []),
                 "kg_relationships": chunk_data.get("kg_relationships", [])
             }
@@ -766,8 +771,8 @@ class RetrievalToolkit:
         if not self.silver_path:
             return None
 
-        # Try thread chunks first
-        for pattern in ["thread_chunks", "individual_chunks"]:
+        # Try known chunk directories first
+        for pattern in ["thread_chunks", "individual_chunks", "attachment_chunks/knowledge"]:
             chunk_path = self.silver_path / pattern / f"{chunk_id}.json"
             if chunk_path.exists():
                 with open(chunk_path, 'r', encoding='utf-8') as f:

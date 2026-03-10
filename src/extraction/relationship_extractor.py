@@ -302,35 +302,20 @@ class LLMRelationshipExtractor(RelationshipExtractor):
                 for e in entities[:self.max_entities_per_call]
             ])
 
-            prompt = f"""Analyze this text and extract relationships between the listed entities.
-
-TEXT:
-{text[:3000]}
-
-ENTITIES:
-{entity_list}
-
-For each relationship found, provide:
-1. source: Source entity name (exactly as listed)
-2. target: Target entity name (exactly as listed)
-3. description: Brief description of the relationship
-4. keywords: 1-3 keywords categorizing the relationship type
-5. weight: Strength of relationship (0.0-1.0)
-
-Return a JSON array of relationship objects. Only include clear, meaningful relationships.
-Example format:
-[
-  {{"source": "John Smith", "target": "Microsoft", "description": "works at", "keywords": ["employment"], "weight": 0.9}},
-  {{"source": "Microsoft", "target": "Seattle", "description": "headquartered in", "keywords": ["location", "headquarters"], "weight": 0.8}}
-]
-
-Return ONLY the JSON array, no other text. If no relationships found, return empty array []."""
+            from prompt_loader import get_prompt
+            prompt = get_prompt("silver", "kg_relationship_extraction", "user_prompt").format(
+                text=text[:3000],
+                entity_list=entity_list,
+            )
 
             # Use deployment name for Azure, model name for OpenAI
             model_name = self.azure_deployment if self.use_azure else self.model
             response = client.chat.completions.create(
                 model=model_name,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": get_prompt("silver", "kg_relationship_extraction", "system_prompt")},
+                    {"role": "user", "content": prompt}
+                ],
                 temperature=0.1,
                 max_tokens=2000
             )

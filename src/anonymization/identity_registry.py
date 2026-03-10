@@ -152,23 +152,24 @@ class IdentityRegistry:
 
                 emails_scanned += 1
 
+                headers = email.get("email_headers", {})
+
                 # Register sender
-                sender_email = email.get("sender_email", "")
-                sender_name = email.get("sender", "")
+                sender_email = headers.get("sender_email", "")
+                sender_name = headers.get("sender", "")
                 if sender_email:
                     self.register_identity(sender_email, sender_name)
 
                 # Register To recipients
-                for r in email.get("recipients_to", []):
+                for r in headers.get("recipients_to", []):
                     if isinstance(r, dict):
                         r_email = r.get("email", "")
                         r_name = r.get("name", "")
                         if r_email:
                             self.register_identity(r_email, r_name)
-                    # Legacy plain string — skip (no email)
 
                 # Register Cc recipients
-                for r in email.get("recipients_cc", []):
+                for r in headers.get("recipients_cc", []):
                     if isinstance(r, dict):
                         r_email = r.get("email", "")
                         r_name = r.get("name", "")

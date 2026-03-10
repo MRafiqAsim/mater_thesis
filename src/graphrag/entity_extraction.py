@@ -35,6 +35,8 @@ import logging
 import hashlib
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from prompt_loader import get_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -110,34 +112,7 @@ class GraphRAGEntityExtractor:
         result = extractor.extract("John works on Project Alpha...")
     """
 
-    SYSTEM_PROMPT = """You are an expert knowledge graph builder. Extract entities and relationships from enterprise documents.
-
-ENTITY TYPES:
-- PERSON: People names (employees, contacts, stakeholders)
-- ORGANIZATION: Companies, departments, teams, divisions
-- PROJECT: Project names, initiatives, programs
-- TECHNOLOGY: Technologies, tools, systems, platforms, software
-- DOCUMENT: Document names, reports, specifications
-- EVENT: Meetings, milestones, deadlines, conferences
-- LOCATION: Offices, cities, countries, regions
-
-RELATIONSHIP TYPES:
-- WORKS_ON: Person works on project/initiative
-- REPORTS_TO: Person reports to another person
-- MENTIONS: Document/email mentions an entity
-- USES: Project/organization uses technology
-- PART_OF: Entity is part of larger entity
-- AUTHORED: Person authored/created document
-- ATTENDED: Person attended event
-- LOCATED_IN: Entity is located in a place
-
-GUIDELINES:
-1. Extract specific, named entities (not generic terms)
-2. Normalize entity names (e.g., "John Smith" not "John")
-3. Only extract relationships explicitly stated or strongly implied
-4. Provide concise descriptions based on context
-5. Assign relationship strength based on confidence (0.0-1.0)
-6. Focus on business-relevant entities and relationships"""
+    SYSTEM_PROMPT = get_prompt("gold", "graphrag_entity_extraction", "system_prompt")
 
     def __init__(
         self,
@@ -170,14 +145,7 @@ GUIDELINES:
 
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.SYSTEM_PROMPT),
-            ("human", """Extract entities and relationships from the following text:
-
----
-{text}
----
-
-Extract up to {max_entities} entities and {max_relationships} relationships.
-Focus on the most important and clearly identifiable entities."""),
+            ("human", get_prompt("gold", "graphrag_entity_extraction", "user_prompt")),
         ])
 
         self.chain = self.prompt | self.llm

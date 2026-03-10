@@ -24,6 +24,8 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMe
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import BaseTool
 
+from prompt_loader import get_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -69,37 +71,7 @@ class ReActConfig:
 # System Prompts
 # ============================================
 
-REACT_SYSTEM_PROMPT = """You are an expert knowledge assistant with access to a comprehensive enterprise knowledge base.
-
-Your task is to answer questions by reasoning step-by-step and using the available tools to find information.
-
-## Available Tools
-{tool_descriptions}
-
-## Reasoning Process
-1. THINK: Analyze what information you need to answer the question
-2. ACT: Use appropriate tools to gather information
-3. OBSERVE: Review the tool results
-4. REPEAT: Continue thinking and acting until you have enough information
-5. ANSWER: Provide a comprehensive answer with citations
-
-## Guidelines
-- Always use tools to find factual information - don't guess
-- For specific questions about entities, use entity_lookup first
-- For understanding relationships, use relationship_search
-- For high-level themes, use community_search
-- For detailed evidence, use vector_search
-- Cite your sources in the final answer using [Source: ...] format
-- If information is not found, say so clearly
-- Be concise but thorough
-
-## Citation Format
-When providing your final answer, cite sources like this:
-- [Entity: John Smith] for entity information
-- [Community: L1_C5] for community summaries
-- [Document: filename.pdf] for document chunks
-
-Current date: {current_date}"""
+REACT_SYSTEM_PROMPT = get_prompt("retrieval", "react_agent_langgraph", "system_prompt")
 
 
 # ============================================
@@ -310,11 +282,7 @@ class ReActAgent:
 
     def _synthesize_answer(self, state: AgentState) -> AgentState:
         """Synthesize final answer from gathered information."""
-        synthesis_prompt = """Based on all the information gathered, provide a comprehensive answer to the original question.
-
-If you couldn't find enough information, clearly state what is known and what is unknown.
-
-Include citations to your sources using [Source: ...] format."""
+        synthesis_prompt = get_prompt("retrieval", "react_agent_langgraph", "synthesis_user_prompt")
 
         state["messages"] = list(state["messages"]) + [
             HumanMessage(content=synthesis_prompt)
@@ -497,27 +465,9 @@ class MultiHopQAAgent:
     aggregates answers.
     """
 
-    DECOMPOSITION_PROMPT = """You are an expert at breaking down complex questions.
-
-Given this question: {question}
-
-Decompose it into 2-4 simpler sub-questions that can be answered independently.
-Each sub-question should target a specific piece of information needed to answer the main question.
-
-Format your response as a numbered list:
-1. First sub-question
-2. Second sub-question
-..."""
-
-    SYNTHESIS_PROMPT = """You are synthesizing information to answer a complex question.
-
-Original question: {question}
-
-Sub-questions and their answers:
-{sub_qa_pairs}
-
-Now provide a comprehensive answer to the original question, citing the relevant sub-answers.
-Be thorough but concise."""
+    SYSTEM_PROMPT = get_prompt("retrieval", "multi_hop_qa", "system_prompt")
+    DECOMPOSITION_PROMPT = get_prompt("retrieval", "multi_hop_qa", "decomposition_user_prompt")
+    SYNTHESIS_PROMPT = get_prompt("retrieval", "multi_hop_qa", "synthesis_user_prompt")
 
     def __init__(
         self,
@@ -573,9 +523,11 @@ Be thorough but concise."""
 
     def _decompose_question(self, question: str) -> List[str]:
         """Decompose complex question into sub-questions."""
-        response = self.llm.invoke(
-            self.DECOMPOSITION_PROMPT.format(question=question)
-        )
+        from langchain_core.messages import SystemMessage, HumanMessage as HMsg
+        response = self.llm.invoke([
+            SystemMessage(content=self.SYSTEM_PROMPT),
+            HMsg(content=self.DECOMPOSITION_PROMPT.format(question=question))
+        ])
 
         # Parse numbered list
         lines = response.content.strip().split("\n")
@@ -606,12 +558,14 @@ Be thorough but concise."""
         for i, sa in enumerate(sub_answers, 1):
             sub_qa_text += f"\n{i}. Q: {sa['question']}\n   A: {sa['answer']}\n"
 
-        response = self.llm.invoke(
-            self.SYNTHESIS_PROMPT.format(
+        from langchain_core.messages import SystemMessage, HumanMessage as HMsg
+        response = self.llm.invoke([
+            SystemMessage(content=self.SYSTEM_PROMPT),
+            HMsg(content=self.SYNTHESIS_PROMPT.format(
                 question=question,
                 sub_qa_pairs=sub_qa_text
-            )
-        )
+            ))
+        ])
 
         return response.content
 

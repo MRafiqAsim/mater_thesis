@@ -164,13 +164,14 @@ class AttachmentProcessor:
                 with open(email_file, "r", encoding="utf-8") as f:
                     email_data = json.load(f)
 
-                email_id = email_data.get("message_id") or email_file.stem
+                email_id = email_data.get("record_id") or email_file.stem
 
                 # Index the file path for later enrichment
                 self._email_file_paths[email_id] = email_file
 
-                has_attachments = email_data.get("has_attachments", False)
-                attachment_count = email_data.get("attachment_count", 0)
+                meta = email_data.get("document_metadata", {})
+                has_attachments = meta.get("has_attachments", False)
+                attachment_count = meta.get("attachment_count", 0)
 
                 if has_attachments and attachment_count > 0:
                     # Get attachment info if available

@@ -12,68 +12,9 @@ from dataclasses import dataclass
 import httpx
 
 from .pii_detector import PIIEntity, PIIType
+from prompt_loader import get_prompt
 
 logger = logging.getLogger(__name__)
-
-
-# System prompt for PII detection
-PII_DETECTION_SYSTEM_PROMPT = """You are a PII (Personally Identifiable Information) detection expert.
-Your task is to identify ALL PII entities in the given text.
-
-PII types to detect:
-- PERSON: Names of individuals (first name, last name, full name)
-- EMAIL: Email addresses
-- PHONE: Phone numbers (any format)
-- ADDRESS: Physical addresses (street, city, postal code)
-- IBAN: International Bank Account Numbers
-- CREDIT_CARD: Credit/debit card numbers
-- SSN: US Social Security Numbers
-- BSN: Dutch Burger Service Nummer (9-digit Dutch ID)
-- DATE_OF_BIRTH: Dates of birth
-- IP_ADDRESS: IP addresses
-- LOCATION: Geographic locations, cities, countries
-- ORGANIZATION: Company/organization names
-- ID_NUMBER: Any other identification numbers
-- LICENSE_PLATE: Vehicle license plates
-- PASSPORT: Passport numbers
-
-IMPORTANT RULES:
-1. Be thorough - identify ALL PII, even if partially visible
-2. Include the exact text as it appears (preserve original formatting)
-3. Provide accurate character positions (0-indexed)
-4. Distinguish between person names and organization names
-5. "John Deere" (the company) is ORGANIZATION, not PERSON
-6. Generic emails like "info@company.com" are still EMAIL
-7. Consider context - "Jan" in Dutch text is likely a PERSON name
-8. DATE_OF_BIRTH means ONLY actual birth dates. Do NOT tag email timestamps, "Date:" header values, "Sent:" dates, or general calendar dates as DATE_OF_BIRTH
-9. Do NOT tag email metadata fields (From:, To:, Cc:, Date:, Subject:, Sent:) as PII — only tag the PII values within them
-
-Return your response as a JSON array of detected entities."""
-
-
-PII_DETECTION_USER_PROMPT = """Analyze the following text and identify all PII entities.
-
-Text:
-\"\"\"
-{text}
-\"\"\"
-
-Return a JSON object with a single key "entities" containing an array.
-Each element must have these exact fields:
-- "text": the exact PII text found
-- "type": the PII type (PERSON, EMAIL, PHONE, etc.)
-- "start": start character position (0-indexed)
-- "end": end character position
-- "confidence": your confidence score (0.0 to 1.0)
-- "reasoning": brief explanation why this is PII
-
-Example response:
-{{"entities": [
-  {{"text": "John Smith", "type": "PERSON", "start": 8, "end": 18, "confidence": 0.95, "reasoning": "Full person name"}},
-  {{"text": "john@email.com", "type": "EMAIL", "start": 30, "end": 44, "confidence": 1.0, "reasoning": "Email address format"}}
-]}}
-
-If no PII is found, return: {{"entities": []}}"""
 
 
 class OpenAIPIIDetector:
@@ -156,23 +97,22 @@ class OpenAIPIIDetector:
 
         try:
             # Build system prompt with optional identity context
-            system_prompt = PII_DETECTION_SYSTEM_PROMPT
+            system_prompt = get_prompt("silver", "pii_detection", "system_prompt")
             if self.identity_registry and self.identity_registry.identity_count > 0:
                 known_names = sorted(self.identity_registry.get_all_known_names())[:50]
-                system_prompt += (
-                    "\n\nKNOWN PEOPLE in this corpus (use for consistent detection):\n"
-                    + ", ".join(known_names)
-                    + "\n\nIf you see these names or variations, mark them as PERSON with high confidence."
-                )
+                suffix = get_prompt("silver", "pii_detection", "known_people_suffix", "")
+                system_prompt += suffix.format(known_names=", ".join(known_names))
+
+            user_prompt = get_prompt("silver", "pii_detection", "user_prompt").format(text=text)
 
             # Call OpenAI API
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": PII_DETECTION_USER_PROMPT.format(text=text)}
+                    {"role": "user", "content": user_prompt}
                 ],
-                temperature=self.temperature,
+                temperature=get_prompt("silver", "pii_detection", "temperature", 0.0),
                 response_format={"type": "json_object"}
             )
 
@@ -409,24 +349,19 @@ class OpenAIAnonymizer:
             return self._replacement_cache[cache_key]
 
         try:
-            prompt = f"""Generate a realistic but fake replacement for this {entity.pii_type.value}:
-Original: {entity.text}
-
-Rules:
-- Must be clearly fake but realistic format
-- Same general type/format as original
-- For PERSON names, use common but obviously fake names
-- For EMAIL, use @example.com domain
-- For PHONE, use 555 exchange (US) or similar fake numbers
-- Keep similar length/format
-
-Return ONLY the replacement text, nothing else."""
+            prompt = get_prompt("silver", "synthetic_replacement", "user_prompt").format(
+                pii_type=entity.pii_type.value,
+                original_text=entity.text,
+            )
 
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=50
+                messages=[
+                    {"role": "system", "content": get_prompt("silver", "synthetic_replacement", "system_prompt")},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=get_prompt("silver", "synthetic_replacement", "temperature", 0.7),
+                max_tokens=get_prompt("silver", "synthetic_replacement", "max_tokens", 50),
             )
 
             replacement = response.choices[0].message.content.strip()

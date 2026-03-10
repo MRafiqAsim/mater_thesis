@@ -18,6 +18,8 @@ from dataclasses import dataclass
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from prompt_loader import get_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,20 +57,7 @@ class CommunitySummarizer:
         summary = summarizer.summarize_community(community, entities, relationships)
     """
 
-    SYSTEM_PROMPT = """You are an expert knowledge synthesizer. Your task is to create a comprehensive summary of a community of related entities from enterprise documents.
-
-The summary should:
-1. Identify the main theme or purpose that connects these entities
-2. Describe key entities and their roles
-3. Explain important relationships and patterns
-4. Highlight any significant facts, decisions, or events
-5. Note any temporal aspects (when things happened)
-
-Format your response as:
-- A cohesive paragraph summarizing the community (3-5 sentences)
-- Key themes: [list 3-5 key themes]
-
-Be specific and factual. Focus on what the entities represent together, not individually."""
+    SYSTEM_PROMPT = get_prompt("gold", "graphrag_community_summarization", "system_prompt")
 
     def __init__(
         self,
@@ -100,18 +89,7 @@ Be specific and factual. Focus on what the entities represent together, not indi
 
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", self.SYSTEM_PROMPT),
-            ("human", """Summarize this community of related entities:
-
-COMMUNITY: {community_id} (Level {level})
-Member Count: {member_count}
-
-ENTITIES ({entity_count}):
-{entities}
-
-RELATIONSHIPS ({relationship_count}):
-{relationships}
-
-Create a summary that captures what this community represents:"""),
+            ("human", get_prompt("gold", "graphrag_community_summarization", "user_prompt")),
         ])
 
         self.chain = self.prompt | self.llm
@@ -310,18 +288,8 @@ class HierarchicalSummarizer:
         )
 
         self.rollup_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are synthesizing summaries of sub-communities into a higher-level overview.
-
-Create a cohesive summary that:
-1. Identifies the overarching theme connecting all sub-communities
-2. Highlights the most important patterns and entities
-3. Notes key relationships between sub-communities
-4. Provides strategic-level insight"""),
-            ("human", """Create a high-level summary from these sub-community summaries:
-
-{sub_summaries}
-
-High-level summary:"""),
+            ("system", get_prompt("gold", "hierarchical_summarization", "system_prompt")),
+            ("human", get_prompt("gold", "hierarchical_summarization", "user_prompt")),
         ])
 
     def summarize_hierarchy(

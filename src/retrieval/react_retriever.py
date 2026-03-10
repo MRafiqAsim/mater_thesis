@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from prompt_loader import get_prompt
+
 from .retrieval_tools import RetrievalToolkit, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -83,62 +85,6 @@ class ReActRetriever:
     3. Synthesize observations into a coherent answer
     4. Cite sources for transparency
     """
-
-    SYSTEM_PROMPT = """You are an intelligent retrieval agent that answers questions about an email archive.
-
-You have access to the following tools:
-
-{tool_descriptions}
-
-## How to Use Tools
-
-When you need information, respond with:
-- THOUGHT: Explain your reasoning about what information you need
-- ACTION: The tool name to use
-- ACTION_INPUT: JSON object with the tool parameters
-
-After receiving an observation, continue with another THOUGHT, ACTION, or provide the final answer.
-
-## Final Answer Format
-
-When you have enough information, respond with:
-- THOUGHT: Summarize what you learned and why you can answer now
-- FINAL_ANSWER: Your complete answer
-
-## Guidelines
-
-1. Start by analyzing what the query is asking for
-2. Use PathRAG for questions about relationships between entities
-3. Use GraphRAG for broad topic/context questions
-4. Use VectorSearch for finding specific evidence
-5. Combine multiple tools when needed for complex queries
-6. Do NOT include source references, chunk IDs, or citations in your final answer — sources are displayed separately
-7. If you cannot find relevant information, say so clearly
-
-## Example
-
-Query: "What decisions did John make about the project?"
-
-THOUGHT: I need to find information connecting John to project decisions. Let me first find paths between John and any projects in the knowledge graph.
-
-ACTION: pathrag_search
-ACTION_INPUT: {{"entities": ["John", "project"]}}
-
-[Observation: Found 2 paths...]
-
-THOUGHT: I found paths showing John's involvement. Now let me get more context from the relevant chunks.
-
-ACTION: vector_search
-ACTION_INPUT: {{"query": "John decisions project"}}
-
-[Observation: Found 5 similar chunks...]
-
-THOUGHT: I now have enough information to answer the question comprehensively.
-
-FINAL_ANSWER: Based on the email archive, John made several key decisions about the project:
-1. He approved the revised timeline for phase 2.
-2. He reassigned the testing workstream to a different team.
-"""
 
     def __init__(
         self,
@@ -300,8 +246,8 @@ FINAL_ANSWER: Based on the email archive, John made several key decisions about 
                 error_message="LLM client not initialized"
             )
 
-        # Build system prompt
-        system_prompt = self.SYSTEM_PROMPT.format(
+        # Build system prompt from config/prompts.json
+        system_prompt = get_prompt("retrieval", "react_agent", "system_prompt", "You are a retrieval agent.").format(
             tool_descriptions=self._build_tool_descriptions()
         )
 
@@ -489,23 +435,21 @@ FINAL_ANSWER: Based on the email archive, John made several key decisions about 
         # Use LLM to synthesize a proper answer from the raw observations
         if self.client:
             context = "\n\n---\n\n".join(obs[:600] for obs in observations[:5])
+            fallback_sys = get_prompt("retrieval", "react_agent", "fallback_system_prompt",
+                "You are a helpful assistant that answers questions based ONLY on the provided context.")
+            fallback_user = get_prompt("retrieval", "react_agent", "fallback_user_prompt",
+                "Context:\n{context}\n\nQuestion: {question}\n\nAnswer based ONLY on the context above.")
             try:
                 response = self.client.chat.completions.create(
                     model=self.config.model,
                     messages=[
-                        {"role": "system", "content": (
-                            "You are a helpful assistant that answers questions based ONLY on the provided context. "
-                            "Do NOT include source references, chunk IDs, or citations in your answer — sources are displayed separately. "
-                            "If the context doesn't contain the answer, say so. Be concise and factual."
-                        )},
-                        {"role": "user", "content": (
-                            f"Context:\n{context}\n\n"
-                            f"Question: {question}\n\n"
-                            f"Answer based ONLY on the context above."
+                        {"role": "system", "content": fallback_sys},
+                        {"role": "user", "content": fallback_user.format(
+                            context=context, question=question
                         )},
                     ],
-                    temperature=0.3,
-                    max_tokens=1000,
+                    temperature=get_prompt("retrieval", "react_agent", "temperature", 0.3),
+                    max_tokens=get_prompt("retrieval", "react_agent", "max_tokens", 1000),
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:

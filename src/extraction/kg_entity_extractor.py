@@ -297,24 +297,20 @@ class LLMKGExtractor(KGEntityExtractor):
             import json
             client = self._get_client()
 
-            prompt = f"""Extract named entities from this text. Return JSON array with objects containing:
-- "text": exact entity text
-- "type": one of {list(self.entity_types)}
-- "start": character start position
-- "end": character end position
-
-Only extract entities of the specified types. Be precise with positions.
-
-Text:
-{text[:3000]}
-
-Return ONLY the JSON array, no other text."""
+            from prompt_loader import get_prompt
+            prompt = get_prompt("silver", "kg_entity_extraction", "user_prompt").format(
+                entity_types=list(self.entity_types),
+                text=text[:3000],
+            )
 
             # Use deployment name for Azure, model name for OpenAI
             model_name = self.azure_deployment if self.use_azure else self.model
             response = client.chat.completions.create(
                 model=model_name,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": get_prompt("silver", "kg_entity_extraction", "system_prompt")},
+                    {"role": "user", "content": prompt}
+                ],
                 temperature=0,
                 max_tokens=1000
             )

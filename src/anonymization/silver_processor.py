@@ -182,8 +182,9 @@ class SilverLayerProcessor:
             # Extract text based on document type
             if doc_type == "email":
                 text = self._extract_email_text(doc_data)
-                doc_id = doc_data.get("message_id", "unknown")
-                source_date = self._parse_date(doc_data.get("sent_time"))
+                doc_id = doc_data.get("record_id", "unknown")
+                meta = doc_data.get("document_metadata", {})
+                source_date = self._parse_date(meta.get("sent_time"))
             else:
                 text = doc_data.get("text", "")
                 doc_id = doc_data.get("doc_id", "unknown")
@@ -201,7 +202,7 @@ class SilverLayerProcessor:
                 text=text,
                 doc_id=doc_id,
                 metadata={
-                    "source_file": doc_data.get("source_file") or doc_data.get("source_pst"),
+                    "source_file": doc_data.get("source_file"),
                     "source_date": source_date,
                     "language": language,
                 }
@@ -261,28 +262,38 @@ class SilverLayerProcessor:
         )
 
     def _extract_email_text(self, email_data: Dict) -> str:
-        """Extract text from email data"""
+        """Extract text from email data (grouped bronze format)"""
+        headers = email_data.get("email_headers", {})
+        meta = email_data.get("document_metadata", {})
         parts = []
 
-        if email_data.get("subject"):
-            parts.append(f"Subject: {email_data['subject']}")
+        if headers.get("subject"):
+            parts.append(f"Subject: {headers['subject']}")
 
-        if email_data.get("sender"):
-            parts.append(f"From: {email_data['sender']}")
+        if headers.get("sender"):
+            parts.append(f"From: {headers['sender']}")
 
-        if email_data.get("recipients_to"):
-            recipients = email_data["recipients_to"]
+        if headers.get("recipients_to"):
+            recipients = headers["recipients_to"]
             if isinstance(recipients, list):
-                recipients = ", ".join(recipients)
+                to_strs = []
+                for r in recipients:
+                    if isinstance(r, dict):
+                        name = r.get("name", "")
+                        email = r.get("email", "")
+                        to_strs.append(f"{name} <{email}>" if name else email)
+                    else:
+                        to_strs.append(str(r))
+                recipients = ", ".join(to_strs)
             parts.append(f"To: {recipients}")
 
-        if email_data.get("sent_time"):
-            parts.append(f"Date: {email_data['sent_time']}")
+        if meta.get("sent_time"):
+            parts.append(f"Date: {meta['sent_time']}")
 
         parts.append("")  # Blank line
 
-        if email_data.get("body_text"):
-            parts.append(email_data["body_text"])
+        if email_data.get("email_body_text"):
+            parts.append(email_data["email_body_text"])
 
         return "\n".join(parts)
 

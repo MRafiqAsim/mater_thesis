@@ -14,6 +14,8 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
 
+from prompt_loader import get_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,18 +100,8 @@ class OpenAIVisionExtractor:
     Uses Azure OpenAI by default, falls back to OpenAI direct API.
     """
 
-    EXTRACTION_PROMPT = """You are an expert document OCR system. Extract ALL text content from this image/document page.
-
-Instructions:
-1. Extract every piece of text visible in the image
-2. Preserve the original structure and formatting as much as possible
-3. For tables, use tab-separated values or markdown table format
-4. For forms, extract field labels and their values
-5. Include headers, footers, page numbers if present
-6. If text is unclear or partially visible, make your best attempt and mark uncertain parts with [unclear]
-7. Do not add any commentary or explanation - only output the extracted text
-
-Output the extracted text below:"""
+    SYSTEM_PROMPT = get_prompt("bronze", "vision_ocr", "system_prompt")
+    EXTRACTION_PROMPT = get_prompt("bronze", "vision_ocr", "user_prompt")
 
     def __init__(self, config: Optional[VisionConfig] = None):
         """
@@ -404,7 +396,10 @@ Output the extracted text below:"""
 
         response = self.client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": content}],
+            messages=[
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {"role": "user", "content": content}
+            ],
             max_tokens=4096,
             temperature=self.config.temperature
         )

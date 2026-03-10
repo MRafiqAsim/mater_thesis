@@ -207,6 +207,30 @@ class AzureSearchIndexer:
                 filterable=True,
                 facetable=True,
             ),
+            # Thread & attachment relationship fields
+            SearchField(
+                name="thread_id",
+                type=SearchFieldDataType.String,
+                filterable=True,
+                facetable=True,
+            ),
+            SearchField(
+                name="source_type",
+                type=SearchFieldDataType.String,
+                filterable=True,
+                facetable=True,
+            ),
+            SearchField(
+                name="source_attachment_filename",
+                type=SearchFieldDataType.String,
+                filterable=True,
+                searchable=True,
+            ),
+            SearchField(
+                name="has_attachments",
+                type=SearchFieldDataType.Boolean,
+                filterable=True,
+            ),
             SearchField(
                 name="indexed_at",
                 type=SearchFieldDataType.DateTimeOffset,
@@ -428,7 +452,9 @@ class HybridSearcher:
             "include_total_count": True,
             "select": ["chunk_id", "content", "summary", "parent_document_id",
                       "parent_type", "detected_language", "source_file",
-                      "chunk_index", "entities"],
+                      "chunk_index", "entities",
+                      "thread_id", "source_type", "source_attachment_filename",
+                      "has_attachments"],
         }
 
         if filters:
@@ -488,6 +514,10 @@ class HybridSearcher:
                     "chunk_index": result.get("chunk_index"),
                     "entities": result.get("entities", []),
                     "summary": result.get("summary"),
+                    "thread_id": result.get("thread_id"),
+                    "source_type": result.get("source_type"),
+                    "source_attachment_filename": result.get("source_attachment_filename"),
+                    "has_attachments": result.get("has_attachments", False),
                 },
                 highlights=result.get("@search.highlights"),
             )

@@ -14,73 +14,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-import yaml
+from prompt_loader import get_prompt, get_section
 
 from .retrieval_tools import RetrievalToolkit, ToolResult
 from .react_retriever import ReActRetriever, ReActResult
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Prompt configuration (loaded from config/prompts.yaml)
-# ---------------------------------------------------------------------------
-_PROMPTS_CACHE: Optional[Dict[str, Any]] = None
-
-
-def _load_prompts() -> Dict[str, Any]:
-    """Load prompt configuration from config/prompts.yaml (cached)."""
-    global _PROMPTS_CACHE
-    if _PROMPTS_CACHE is not None:
-        return _PROMPTS_CACHE
-
-    # Walk up from this file to find the project root (contains config/)
-    prompts_path = Path(__file__).resolve().parent.parent.parent / "config" / "prompts.yaml"
-    if prompts_path.exists():
-        with open(prompts_path, "r", encoding="utf-8") as f:
-            _PROMPTS_CACHE = yaml.safe_load(f)
-            logger.info(f"Loaded prompts from {prompts_path}")
-            return _PROMPTS_CACHE
-
-    logger.warning(f"Prompts config not found at {prompts_path}, using built-in defaults")
-    _PROMPTS_CACHE = {}
-    return _PROMPTS_CACHE
-
-
-def _get_generation_config() -> Dict[str, Any]:
-    """Get the 'generation' section from prompts config with defaults."""
-    prompts = _load_prompts()
-    gen = prompts.get("generation", {})
-    defaults = {
-        "system_prompt": (
-            "You are a helpful assistant that answers questions based ONLY on the provided context.\n\n"
-            "CRITICAL RULES:\n"
-            "1. ONLY use information from the provided context\n"
-            "2. If the context doesn't contain the answer, say \"I don't have enough information to answer this question\"\n"
-            "3. Always cite which source(s) you used by mentioning [chunk_id] format\n"
-            "4. Never make up information or use knowledge from outside the context\n"
-            "5. If you can partially answer, do so and explain what information is missing\n\n"
-            "Be concise and factual."
-        ),
-        "user_prompt": (
-            "Context:\n{context}\n\n"
-            "Question: {question}\n\n"
-            "Answer based ONLY on the context above. If the information is not in the context, say so explicitly."
-        ),
-        "temperature": 0.3,
-        "max_tokens": 1000,
-        "missing_indicators": [
-            "don't have enough information",
-            "not in the context",
-            "cannot find",
-            "no information",
-            "not mentioned",
-            "insufficient context",
-            "does not contain",
-        ],
-    }
-    for key, default in defaults.items():
-        gen.setdefault(key, default)
-    return gen
 
 
 class RetrievalStrategy(Enum):
@@ -243,6 +182,10 @@ class HybridRetriever:
         tool_result = self.toolkit.vector_search(query, top_k=self.config.top_k_per_strategy)
 
         chunks = tool_result.data if tool_result.success else []
+
+        # Thread expansion: fetch sibling chunks from same threads
+        if chunks:
+            chunks = self._expand_by_thread(chunks)
 
         # Generate answer if configured
         answer = ""
@@ -431,6 +374,9 @@ class HybridRetriever:
         # Take top-k
         final_chunks = [chunk for chunk, score in sorted_chunks[:self.config.final_top_k]]
 
+        # Thread expansion: fetch sibling chunks (email body + attachments) from same threads
+        final_chunks = self._expand_by_thread(final_chunks)
+
         # Generate answer
         answer = ""
         is_grounded = True
@@ -518,6 +464,72 @@ class HybridRetriever:
 
         return list(set(entities))
 
+    def _expand_by_thread(
+        self,
+        chunks: List[Dict[str, Any]],
+        max_siblings: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Expand retrieval results by fetching sibling chunks from the same thread.
+
+        When a chunk is retrieved, also pull in other email/attachment chunks
+        from the same conversation thread so the LLM sees the full picture.
+        """
+        if not self.silver_path:
+            return chunks
+
+        existing_ids = {c.get("chunk_id") for c in chunks}
+
+        # Collect unique thread_ids from results
+        thread_ids = set()
+        for chunk in chunks:
+            tid = chunk.get("thread_id")
+            if tid:
+                thread_ids.add(tid)
+
+        if not thread_ids:
+            return chunks
+
+        # Search Silver layer for sibling chunks
+        search_dirs = [
+            self.silver_path / "thread_chunks",
+            self.silver_path / "individual_chunks",
+            self.silver_path / "attachment_chunks" / "knowledge",
+        ]
+
+        sibling_chunks = []
+        for search_dir in search_dirs:
+            if not search_dir.exists():
+                continue
+            for chunk_file in search_dir.glob("*.json"):
+                if len(sibling_chunks) >= max_siblings:
+                    break
+                try:
+                    with open(chunk_file, 'r', encoding='utf-8') as f:
+                        chunk_data = json.load(f)
+                    cid = chunk_data.get("chunk_id")
+                    tid = chunk_data.get("thread_id")
+                    if tid in thread_ids and cid not in existing_ids:
+                        sibling_chunks.append({
+                            "chunk_id": cid,
+                            "text": chunk_data.get("text_anonymized", ""),
+                            "thread_id": tid,
+                            "thread_subject": chunk_data.get("thread_subject"),
+                            "source_type": chunk_data.get("source_type", "email"),
+                            "source_attachment_filename": chunk_data.get("source_attachment_filename", ""),
+                            "has_attachments": chunk_data.get("has_attachments", False),
+                            "similarity_score": 0.0,
+                            "_expanded": True,
+                        })
+                        existing_ids.add(cid)
+                except Exception:
+                    continue
+
+        if sibling_chunks:
+            logger.info(f"Thread expansion: added {len(sibling_chunks)} sibling chunks from {len(thread_ids)} threads")
+
+        return list(chunks) + sibling_chunks
+
     def _calculate_confidence(self, chunks: List[Dict[str, Any]]) -> float:
         """Calculate confidence score based on retrieved chunks."""
         if not chunks:
@@ -547,24 +559,30 @@ class HybridRetriever:
         if not self.llm_client or not chunks:
             return "", True, None
 
-        gen_cfg = _get_generation_config()
-
-        # Build context from chunks
+        # Build context from chunks — label email vs attachment for LLM clarity
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
             text = chunk.get("text", chunk.get("text_anonymized", ""))[:500]
             chunk_id = chunk.get("chunk_id", "unknown")
             thread = chunk.get("thread_subject", "")
-            context_parts.append(f"[{chunk_id}] (Thread: {thread})\n{text}")
+            source_type = chunk.get("source_type", "email")
+
+            if source_type == "attachment":
+                filename = chunk.get("source_attachment_filename", "unknown")
+                label = f"[{chunk_id}] (Thread: {thread} | Attachment: {filename})"
+            else:
+                label = f"[{chunk_id}] (Thread: {thread} | Email body)"
+
+            context_parts.append(f"{label}\n{text}")
 
         context = "\n\n---\n\n".join(context_parts)
 
         if extra_context:
             context = f"{extra_context}\n\n---\n\nEvidence:\n{context}"
 
-        # Format prompts from config
-        system_prompt = gen_cfg["system_prompt"]
-        user_prompt = gen_cfg["user_prompt"].format(
+        # Format prompts from config/prompts.json
+        system_prompt = get_prompt("retrieval", "generation", "system_prompt", "You are a helpful assistant.")
+        user_prompt = get_prompt("retrieval", "generation", "user_prompt", "Context:\n{context}\n\nQuestion: {question}").format(
             context=context,
             question=query,
         )
@@ -576,8 +594,8 @@ class HybridRetriever:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=gen_cfg["temperature"],
-                max_tokens=gen_cfg["max_tokens"],
+                temperature=get_prompt("retrieval", "generation", "temperature", 0.3),
+                max_tokens=get_prompt("retrieval", "generation", "max_tokens", 1000),
             )
             answer = response.choices[0].message.content or ""
         except Exception as e:
@@ -588,7 +606,14 @@ class HybridRetriever:
         is_grounded = True
         missing_info: Optional[str] = None
 
-        for indicator in gen_cfg["missing_indicators"]:
+        missing_indicators = get_prompt("retrieval", "generation", "missing_indicators", [
+            "don't have enough information",
+            "not in the context",
+            "cannot find",
+            "no information",
+            "not mentioned",
+        ])
+        for indicator in missing_indicators:
             if indicator.lower() in answer.lower():
                 is_grounded = False
                 missing_info = "Required information not found in knowledge base"

@@ -82,7 +82,7 @@ class MetadataExtractor:
         """
         metadata = DocumentMetadata(
             doc_id=self._generate_email_id(email_data),
-            source_file=email_data.get("source_pst", "unknown"),
+            source_file=email_data.get("source_file", "unknown"),
             source_type=SourceType.EMAIL,
             extraction_date=datetime.now()
         )
@@ -124,11 +124,12 @@ class MetadataExtractor:
     def _generate_email_id(self, email_data: dict) -> str:
         """Generate unique ID for email"""
         import hashlib
-        # Use sender + subject + sent time
+        headers = email_data.get("email_headers", {})
+        meta = email_data.get("document_metadata", {})
         unique_str = (
-            f"{email_data.get('from', '')}:"
-            f"{email_data.get('subject', '')}:"
-            f"{email_data.get('sent_time', '')}"
+            f"{headers.get('sender', '')}:"
+            f"{headers.get('subject', '')}:"
+            f"{meta.get('sent_time', '')}"
         )
         return hashlib.md5(unique_str.encode()).hexdigest()[:16]
 
@@ -160,10 +161,13 @@ class MetadataExtractor:
         email_data: dict,
         metadata: DocumentMetadata
     ) -> None:
-        """Extract metadata from email data"""
+        """Extract metadata from email data (grouped bronze format)"""
+        headers = email_data.get("email_headers", {})
+        meta = email_data.get("document_metadata", {})
+
         # Temporal fields
-        if "sent_time" in email_data:
-            sent = email_data["sent_time"]
+        sent = meta.get("sent_time")
+        if sent:
             if isinstance(sent, datetime):
                 metadata.sent_date = sent
             elif isinstance(sent, str):
@@ -173,8 +177,8 @@ class MetadataExtractor:
                 except (ValueError, TypeError):
                     pass
 
-        if "received_time" in email_data:
-            received = email_data["received_time"]
+        received = meta.get("received_time")
+        if received:
             if isinstance(received, datetime):
                 metadata.received_date = received
             elif isinstance(received, str):
@@ -185,16 +189,16 @@ class MetadataExtractor:
                     pass
 
         # Email-specific fields
-        metadata.email_subject = email_data.get("subject")
-        metadata.email_from = email_data.get("from")
-        metadata.email_to = email_data.get("to", [])
+        metadata.email_subject = headers.get("subject")
+        metadata.email_from = headers.get("sender")
+        metadata.email_to = headers.get("recipients_to", [])
         if isinstance(metadata.email_to, str):
             metadata.email_to = [metadata.email_to]
 
-        metadata.email_thread_id = email_data.get("thread_id") or email_data.get("conversation_id")
+        metadata.email_thread_id = headers.get("conversation_id")
 
         # Author from sender
-        metadata.author = email_data.get("from")
+        metadata.author = headers.get("sender")
 
         # Check if this is an attachment
         metadata.is_attachment = email_data.get("is_attachment", False)

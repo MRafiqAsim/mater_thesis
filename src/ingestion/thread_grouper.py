@@ -41,13 +41,16 @@ class EmailThread:
         """Add an email to the thread"""
         self.emails.append(email)
 
+        headers = email.get('email_headers', {})
+        meta = email.get('document_metadata', {})
+
         # Track participants — handle both structured and plain formats
-        sender = email.get('sender') or email.get('sender_email', '')
+        sender = headers.get('sender') or headers.get('sender_email', '')
         if sender and sender not in self.participants:
             self.participants.append(sender)
 
         # Also add recipient emails/names as participants
-        for recipient_list in [email.get('recipients_to', []), email.get('recipients_cc', [])]:
+        for recipient_list in [headers.get('recipients_to', []), headers.get('recipients_cc', [])]:
             for r in recipient_list:
                 if isinstance(r, dict):
                     name = r.get('name', '') or r.get('email', '')
@@ -57,7 +60,7 @@ class EmailThread:
                     self.participants.append(name)
 
         # Track date range
-        sent_time = self._parse_date(email.get('sent_time'))
+        sent_time = self._parse_date(meta.get('sent_time'))
         if sent_time:
             if self.start_date is None or sent_time < self.start_date:
                 self.start_date = sent_time
@@ -81,7 +84,8 @@ class EmailThread:
     def get_sorted_emails(self) -> List[Dict[str, Any]]:
         """Get emails sorted by date (oldest first)"""
         def get_date(email):
-            dt = self._parse_date(email.get('sent_time'))
+            meta = email.get('document_metadata', {})
+            dt = self._parse_date(meta.get('sent_time'))
             return dt or datetime.min
 
         return sorted(self.emails, key=get_date)
@@ -106,18 +110,21 @@ class EmailThread:
 
         # Add each email in chronological order
         for i, email in enumerate(self.get_sorted_emails(), 1):
+            headers = email.get('email_headers', {})
+            meta = email.get('document_metadata', {})
+
             if include_metadata:
                 parts.append(f"--- Email {i}/{self.email_count} ---")
-                if email.get('sender'):
-                    parts.append(f"From: {email['sender']}")
-                if email.get('sent_time'):
-                    parts.append(f"Date: {email['sent_time']}")
-                if i == 1 and email.get('subject'):
-                    parts.append(f"Subject: {email['subject']}")
+                if headers.get('sender'):
+                    parts.append(f"From: {headers['sender']}")
+                if meta.get('sent_time'):
+                    parts.append(f"Date: {meta['sent_time']}")
+                if i == 1 and headers.get('subject'):
+                    parts.append(f"Subject: {headers['subject']}")
                 parts.append("")
 
             # Email body
-            body = email.get('body_text', '')
+            body = email.get('email_body_text', '')
             if body:
                 parts.append(clean_email_text(body))
 
@@ -136,7 +143,7 @@ class EmailThread:
             "participants": self.participants,
             "start_date": self.start_date.isoformat() if self.start_date else None,
             "end_date": self.end_date.isoformat() if self.end_date else None,
-            "email_ids": [e.get('message_id') for e in self.emails],
+            "email_ids": [e.get('record_id') for e in self.emails],
             "is_thread": self.is_thread,
         }
 
@@ -232,62 +239,67 @@ class ThreadGrouper:
 
         # Pass 1: Register all Message-IDs
         for email in emails:
-            header_mid = email.get('header_message_id')
-            internal_mid = email.get('message_id', '')
+            headers = email.get('email_headers', {})
+            header_mid = headers.get('message_id')
+            internal_mid = email.get('record_id', '')
             if header_mid:
                 header_to_internal[header_mid] = internal_mid
                 parent.setdefault(header_mid, header_mid)
 
         # Pass 2: Link In-Reply-To and References
         for email in emails:
-            header_mid = email.get('header_message_id')
+            headers = email.get('email_headers', {})
+            header_mid = headers.get('message_id')
             if not header_mid:
                 continue
 
-            in_reply_to = email.get('in_reply_to')
+            in_reply_to = headers.get('in_reply_to')
             if in_reply_to:
                 parent.setdefault(in_reply_to, in_reply_to)
                 union(header_mid, in_reply_to)
 
-            references = email.get('references', [])
+            references = headers.get('references', [])
             for ref in references:
                 parent.setdefault(ref, ref)
                 union(header_mid, ref)
 
-        # Pass 3: Build thread_key mapping (internal_message_id → thread_key)
+        # Pass 3: Build thread_key mapping (record_id → thread_key)
         email_thread_map: Dict[str, str] = {}
         for email in emails:
-            header_mid = email.get('header_message_id')
+            headers = email.get('email_headers', {})
+            header_mid = headers.get('message_id')
             if header_mid:
                 root = find(header_mid)
-                email_thread_map[email.get('message_id', '')] = f"rfc:{root}"
+                email_thread_map[email.get('record_id', '')] = f"rfc:{root}"
 
         return email_thread_map
 
     def _get_thread_key(self, email: Dict[str, Any], rfc_map: Optional[Dict[str, str]] = None) -> str:
         """Generate a key for thread grouping"""
+        headers = email.get('email_headers', {})
+
         # Priority 1: RFC 2822 threading (Message-ID/In-Reply-To/References)
         if self.use_rfc2822_threading and rfc_map:
-            rfc_key = rfc_map.get(email.get('message_id', ''))
+            rfc_key = rfc_map.get(email.get('record_id', ''))
             if rfc_key:
                 return rfc_key
 
         # Priority 2: conversation_id
         if self.use_conversation_id:
-            conv_id = email.get('conversation_id')
+            conv_id = headers.get('conversation_id')
             if conv_id:
                 return f"conv:{conv_id}"
 
         # Priority 3: Normalized subject
         if self.use_subject_matching:
-            subject = email.get('subject', '')
+            subject = headers.get('subject', '')
             if self.normalize_subject:
                 subject = self._normalize_subject(subject)
             if subject:
                 return f"subj:{subject}"
 
-        # Fallback: Use message_id (no grouping)
-        return f"msg:{email.get('message_id', 'unknown')}"
+        # Fallback: Use record_id (no grouping)
+        return f"msg:{email.get('record_id', 'unknown')}"
 
     def group_emails(self, emails: Iterator[Dict[str, Any]]) -> List[EmailThread]:
         """
@@ -316,7 +328,8 @@ class ThreadGrouper:
 
             if thread_key not in threads:
                 # Get original subject for display
-                subject = email.get('subject', 'No Subject')
+                headers = email.get('email_headers', {})
+                subject = headers.get('subject', 'No Subject')
                 if self.normalize_subject:
                     display_subject = self._normalize_subject(subject) or subject
                 else:

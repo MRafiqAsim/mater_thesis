@@ -96,35 +96,50 @@ class EmailMessage:
     language: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
-        result = {
-            "message_id": self.message_id,
-            "source_pst": self.source_pst,
-            "folder_path": self.folder_path,
-            "subject": self.subject,
-            "sender": self.sender,
-            "sender_email": self.sender_email,
-            "recipients_to": self.recipients_to,
-            "recipients_cc": self.recipients_cc,
-            "sent_time": self.sent_time.isoformat() if self.sent_time else None,
-            "received_time": self.received_time.isoformat() if self.received_time else None,
-            "body_text": self.body_text,
-            "conversation_id": self.conversation_id,
-            "in_reply_to": self.in_reply_to,
-            "references": self.references,
-            "header_message_id": self.header_message_id,
-            "return_path": self.return_path,
-            "x_originating_ip": self.x_originating_ip,
-            "has_attachments": self.has_attachments,
-            "attachment_count": len(self.attachments),
-            "importance": self.importance,
-            "language": self.language,
-            "extraction_time": self.extraction_time.isoformat(),
-        }
+        """Convert to grouped dictionary for serialization.
 
-        # Include attachment metadata (without binary content)
-        if self.attachments:
-            result["attachments"] = [
+        Structure:
+        - record_id, source_file, file_type, ingestion_time (top-level)
+        - email_headers: addressing, threading, transport fields
+        - email_body_text, email_body_html: content
+        - document_metadata: timestamps, flags, language
+        - attachments: list of attachment metadata
+        """
+        result = {
+            "record_id": self.message_id,
+            "source_file": self.source_pst,
+            "file_type": ".pst",
+            "ingestion_time": self.extraction_time.isoformat(),
+
+            "email_headers": {
+                "subject": self.subject,
+                "sender": self.sender,
+                "sender_email": self.sender_email,
+                "recipients_to": self.recipients_to,
+                "recipients_cc": self.recipients_cc,
+                "recipients_bcc": self.recipients_bcc,
+                "folder_path": self.folder_path,
+                "message_id": self.header_message_id,
+                "in_reply_to": self.in_reply_to,
+                "references": self.references,
+                "conversation_id": self.conversation_id,
+                "return_path": self.return_path,
+                "x_originating_ip": self.x_originating_ip,
+            },
+
+            "email_body_text": self.body_text,
+            "email_body_html": self.body_html,
+
+            "document_metadata": {
+                "sent_time": self.sent_time.isoformat() if self.sent_time else None,
+                "received_time": self.received_time.isoformat() if self.received_time else None,
+                "importance": self.importance,
+                "language": self.language,
+                "has_attachments": self.has_attachments,
+                "attachment_count": len(self.attachments),
+            },
+
+            "attachments": [
                 {
                     "attachment_id": att.attachment_id,
                     "filename": att.filename,
@@ -132,7 +147,8 @@ class EmailMessage:
                     "size": att.size,
                 }
                 for att in self.attachments
-            ]
+            ],
+        }
 
         return result
 

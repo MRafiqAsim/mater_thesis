@@ -18,6 +18,8 @@ from dataclasses import dataclass
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from prompt_loader import get_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -136,24 +138,8 @@ class Summarizer:
             entity_instruction = "Preserve important names, dates, and specific references."
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert document summarizer. Your task is to create accurate,
-informative summaries that capture the essential information from the source text.
-
-Guidelines:
-- Focus on key facts, decisions, and outcomes
-- {length_instruction}
-- {language_instruction}
-- {entity_instruction}
-- Do not add information not present in the source
-- Maintain a professional, neutral tone"""),
-            ("human", """Summarize the following text:
-
-{context_section}
----
-{text}
----
-
-Summary:"""),
+            ("system", get_prompt("silver", "document_summarization", "system_prompt")),
+            ("human", get_prompt("silver", "document_summarization", "user_prompt")),
         ])
 
         context_section = f"Context: {context}\n" if context else ""
@@ -311,20 +297,8 @@ class EmailThreadSummarizer:
         thread_text = self._format_thread(emails)
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are an expert at summarizing email conversations.
-
-Create a summary that captures:
-1. The main topic/purpose of the conversation
-2. Key participants and their roles
-3. Important decisions, action items, or outcomes
-4. Any deadlines or commitments mentioned
-
-Format the summary with clear sections if the thread covers multiple topics."""),
-            ("human", """Summarize this email thread:
-
-{thread}
-
-Summary:"""),
+            ("system", get_prompt("silver", "email_thread_summarization", "system_prompt")),
+            ("human", get_prompt("silver", "email_thread_summarization", "user_prompt")),
         ])
 
         chain = prompt | self.llm

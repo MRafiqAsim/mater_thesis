@@ -310,9 +310,9 @@ class AttachmentClassifier:
                 try:
                     with open(email_file, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    mid = data.get("message_id", "")
+                    mid = data.get("record_id", "")
                     if mid == email_id or email_file.stem == email_id:
-                        body = data.get("body_text", "")
+                        body = data.get("email_body_text", "")
                         self._email_body_cache[email_id] = body
                         return body
                 except Exception as e:

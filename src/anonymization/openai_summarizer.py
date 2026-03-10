@@ -8,6 +8,8 @@ import logging
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 
+from prompt_loader import get_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,64 +34,10 @@ class SummaryResult:
         }
 
 
-SUMMARIZATION_SYSTEM_PROMPT = """You are an expert text summarizer for a knowledge management system.
-Your task is to create concise, accurate summaries that preserve key information.
-
-Guidelines:
-1. Capture the main points and essential information
-2. Preserve important entities (people, organizations, dates, locations)
-3. Maintain factual accuracy - never add information not in the source
-4. Use clear, professional language
-5. For technical content, preserve key terminology
-6. Note any temporal information (dates, deadlines, versions)"""
-
-
-SUMMARIZATION_USER_PROMPT_CONCISE = """Summarize the following text in a concise paragraph (max {max_length} characters).
-Focus on the most important information.
-
-Text:
-\"\"\"
-{text}
-\"\"\"
-
-Provide your response as JSON:
-{{
-  "summary": "your concise summary here",
-  "key_entities": ["list", "of", "important", "entities"],
-  "key_topics": ["main", "topics", "covered"]
-}}"""
-
-
-SUMMARIZATION_USER_PROMPT_DETAILED = """Provide a detailed summary of the following text (max {max_length} characters).
-Include all significant points and supporting details.
-
-Text:
-\"\"\"
-{text}
-\"\"\"
-
-Provide your response as JSON:
-{{
-  "summary": "your detailed summary here",
-  "key_entities": ["list", "of", "important", "entities"],
-  "key_topics": ["main", "topics", "covered"]
-}}"""
-
-
-SUMMARIZATION_USER_PROMPT_BULLETS = """Summarize the following text as bullet points (max {max_length} characters total).
-Each bullet should capture a key point.
-
-Text:
-\"\"\"
-{text}
-\"\"\"
-
-Provide your response as JSON:
-{{
-  "summary": "• Point 1\\n• Point 2\\n• Point 3",
-  "key_entities": ["list", "of", "important", "entities"],
-  "key_topics": ["main", "topics", "covered"]
-}}"""
+SUMMARIZATION_SYSTEM_PROMPT = get_prompt("silver", "summarization", "system_prompt")
+SUMMARIZATION_USER_PROMPT_CONCISE = get_prompt("silver", "summarization", "user_prompt_concise")
+SUMMARIZATION_USER_PROMPT_DETAILED = get_prompt("silver", "summarization", "user_prompt_detailed")
+SUMMARIZATION_USER_PROMPT_BULLETS = get_prompt("silver", "summarization", "user_prompt_bullets")
 
 
 class OpenAISummarizer:

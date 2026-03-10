@@ -387,27 +387,22 @@ class CommunityDetector:
 
         relationships_text = "\n".join(relationships[:15])
 
-        prompt = f"""Summarize this community of related entities from an email archive.
-
-Key Entities ({community.entity_count} total):
-{entities_text}
-
-Relationships:
-{relationships_text}
-
-Write a concise summary (2-3 sentences) describing:
-1. What this community is about (main topic/theme)
-2. Key people or organizations involved
-3. Main activities or processes discussed
-
-Summary:"""
+        from prompt_loader import get_prompt
+        prompt = get_prompt("gold", "community_summary", "user_prompt").format(
+            entity_count=community.entity_count,
+            entities_text=entities_text,
+            relationships_text=relationships_text,
+        )
 
         try:
             response = self.llm_client.chat.completions.create(
                 model=self.llm_model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                temperature=0.3
+                messages=[
+                    {"role": "system", "content": get_prompt("gold", "community_summary", "system_prompt")},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=get_prompt("gold", "community_summary", "max_tokens", 200),
+                temperature=get_prompt("gold", "community_summary", "temperature", 0.3)
             )
             return response.choices[0].message.content.strip()
         except Exception as e:

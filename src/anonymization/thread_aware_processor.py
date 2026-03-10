@@ -644,8 +644,9 @@ class ThreadAwareProcessor:
 
         if self.process_attachments and self.attachment_processor:
             for email in thread.emails:
-                email_id = email.get('message_id', '')
-                has_att = email.get('has_attachments', False)
+                email_id = email.get('record_id', '')
+                email_meta = email.get('document_metadata', {})
+                has_att = email_meta.get('has_attachments', False)
 
                 if email_id and has_att:
                     attachment_contents = self.attachment_processor.get_email_attachment_content(email_id)
@@ -755,8 +756,9 @@ class ThreadAwareProcessor:
         attachment_filenames = []
         attachment_contents = []
 
-        if self.process_attachments and self.attachment_processor and email.get('has_attachments'):
-            email_id = email.get('message_id', '')
+        email_meta = email.get('document_metadata', {})
+        if self.process_attachments and self.attachment_processor and email_meta.get('has_attachments'):
+            email_id = email.get('record_id', '')
             if email_id:
                 raw_contents = self.attachment_processor.get_email_attachment_content(email_id)
                 for att_content in raw_contents:
@@ -767,8 +769,8 @@ class ThreadAwareProcessor:
         if not email_text.strip():
             return chunks
 
-        has_attachments = len(attachment_filenames) > 0 or email.get('has_attachments', False)
-        attachment_count = len(attachment_filenames) or email.get('attachment_count', 0)
+        has_attachments = len(attachment_filenames) > 0 or email_meta.get('has_attachments', False)
+        attachment_count = len(attachment_filenames) or email_meta.get('attachment_count', 0)
 
         # Detect language
         lang_result = self.language_detector.detect(email_text)
@@ -777,7 +779,7 @@ class ThreadAwareProcessor:
         # Chunk the email body text
         text_chunks = self.chunker.chunk(
             text=email_text,
-            doc_id=email.get('message_id', thread.conversation_id),
+            doc_id=email.get('record_id', thread.conversation_id),
             metadata={"subject": thread.subject}
         )
 
@@ -800,7 +802,7 @@ class ThreadAwareProcessor:
 
             # Create chunk (source_type="email", stored in individual_chunks)
             thread_chunk = ThreadChunk(
-                chunk_id=f"{email.get('message_id', 'unknown')}_{chunk.chunk_index}",
+                chunk_id=f"{email.get('record_id', 'unknown')}_{chunk.chunk_index}",
                 thread_id=thread.conversation_id,
                 chunk_index=chunk.chunk_index,
                 text_original=chunk.text,
@@ -858,23 +860,26 @@ class ThreadAwareProcessor:
         parts = []
         attachment_filenames = []
 
-        if email.get('subject'):
-            parts.append(f"Subject: {email['subject']}")
-        if email.get('sender'):
-            parts.append(f"From: {email['sender']}")
-        if email.get('sent_time'):
-            parts.append(f"Date: {email['sent_time']}")
+        headers = email.get('email_headers', {})
+        meta = email.get('document_metadata', {})
+
+        if headers.get('subject'):
+            parts.append(f"Subject: {headers['subject']}")
+        if headers.get('sender'):
+            parts.append(f"From: {headers['sender']}")
+        if meta.get('sent_time'):
+            parts.append(f"Date: {meta['sent_time']}")
 
         parts.append("")
 
-        if email.get('body_text'):
-            parts.append(email['body_text'])
+        if email.get('email_body_text'):
+            parts.append(email['email_body_text'])
 
         # Process attachments if enabled
         if (include_attachments and self.include_attachment_text and
-            self.attachment_processor and email.get('has_attachments')):
+            self.attachment_processor and meta.get('has_attachments')):
 
-            email_id = email.get('message_id', '')
+            email_id = email.get('record_id', '')
             if email_id:
                 attachment_contents = self.attachment_processor.get_email_attachment_content(email_id)
 
@@ -989,20 +994,22 @@ class ThreadAwareProcessor:
             # Combine anonymized chunk texts
             combined_text = "\n\n".join([c.text_anonymized for c in chunks])[:4000]
 
+            from prompt_loader import get_prompt
             response = client.chat.completions.create(
                 model=model,
                 messages=[
                     {
                         "role": "system",
-                        "content": "Summarize this email thread in 2-3 sentences. Focus on the main topic and outcome."
+                        "content": get_prompt("silver", "thread_summary", "system_prompt",
+                                              "Summarize this email thread in 2-3 sentences. Focus on the main topic and outcome.")
                     },
                     {
                         "role": "user",
                         "content": combined_text
                     }
                 ],
-                temperature=0.3,
-                max_tokens=150
+                temperature=get_prompt("silver", "thread_summary", "temperature", 0.3),
+                max_tokens=get_prompt("silver", "thread_summary", "max_tokens", 150),
             )
 
             return response.choices[0].message.content.strip()
