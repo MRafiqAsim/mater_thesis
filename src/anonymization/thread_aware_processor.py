@@ -567,7 +567,6 @@ class ThreadAwareProcessor:
             self.silver_path / "thread_summaries",                    # Thread summaries
             self.silver_path / "individual_chunks",                   # Single email chunks
             self.silver_path / "attachment_chunks" / "knowledge",     # Knowledge attachments only
-            self.silver_path / "pii_mappings",
             self.silver_path / "metadata",
         ]
 
@@ -1067,11 +1066,6 @@ class ThreadAwareProcessor:
         with open(metadata_file, "w") as f:
             json.dump(existing, f, indent=2, default=str)
 
-        # Save PII mapping
-        mapping_file = self.silver_path / "pii_mappings" / "thread_mapping.json"
-        mapping = self.anonymizer.get_mapping()
-        with open(mapping_file, "w") as f:
-            json.dump(mapping, f, indent=2)
 
 
 # Convenience function
