@@ -373,14 +373,16 @@ class PathRAGRetriever:
         return path_results
 
     def find_entity_ids_by_name(self, names: List[str]) -> List[str]:
-        """Find entity node IDs by name."""
+        """Find entity node IDs by name (bidirectional substring match)."""
         graph = self._load_graph()
         entity_ids = []
 
         for name in names:
             name_lower = name.lower()
             for node_id, node in graph.nodes.items():
-                if name_lower in node.name.lower():
+                node_lower = node.name.lower()
+                # Bidirectional: query in node name OR node name in query
+                if name_lower in node_lower or node_lower in name_lower:
                     entity_ids.append(node_id)
                     break
 

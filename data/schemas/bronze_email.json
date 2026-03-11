@@ -162,6 +162,28 @@
       }
     },
 
+    "sensitivity": {
+      "type": "object",
+      "description": "Email sensitivity classification (technical vs sensitive)",
+      "properties": {
+        "classification": {
+          "type": "string",
+          "enum": ["technical", "sensitive"],
+          "description": "Whether the email is technical (preserve names) or sensitive (anonymize)"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Classification confidence score"
+        },
+        "signals": {
+          "type": "object",
+          "description": "Audit trail of classification signals"
+        }
+      }
+    },
+
     "attachments": {
       "type": "array",
       "description": "Attachment metadata (no binary content)",

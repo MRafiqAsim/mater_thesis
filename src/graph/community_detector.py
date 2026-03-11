@@ -39,6 +39,7 @@ class Community:
     parent_id: Optional[str] = None
     child_ids: List[str] = field(default_factory=list)
     node_ids: List[str] = field(default_factory=list)
+    source_chunk_ids: List[str] = field(default_factory=list)
     entity_count: int = 0
     edge_count: int = 0
     density: float = 0.0
@@ -55,6 +56,7 @@ class Community:
             "parent_id": self.parent_id,
             "child_ids": self.child_ids,
             "node_ids": self.node_ids,
+            "source_chunk_ids": self.source_chunk_ids,
             "entity_count": self.entity_count,
             "edge_count": self.edge_count,
             "density": self.density,
@@ -240,8 +242,9 @@ class CommunityDetector:
                 max_edges = len(node_ids) * (len(node_ids) - 1) / 2
                 community.density = community.edge_count / max_edges if max_edges > 0 else 0
 
-                # Extract key entities
+                # Extract key entities and source chunks
                 community.key_entities = self._extract_key_entities(node_ids)
+                community.source_chunk_ids = self._collect_source_chunks(node_ids)
 
                 self.communities[level][comm_id] = community
 
@@ -285,13 +288,23 @@ class CommunityDetector:
                 max_edges = len(node_ids) * (len(node_ids) - 1) / 2
                 community.density = community.edge_count / max_edges if max_edges > 0 else 0
 
-                # Extract key entities
+                # Extract key entities and source chunks
                 community.key_entities = self._extract_key_entities(node_ids)
+                community.source_chunk_ids = self._collect_source_chunks(node_ids)
 
                 self.communities[level][comm_id] = community
 
             if progress_callback:
                 progress_callback(level + 1, self.config.num_levels)
+
+    def _collect_source_chunks(self, node_ids: List[str]) -> List[str]:
+        """Aggregate source chunk IDs from all member nodes."""
+        chunk_ids = set()
+        for node_id in node_ids:
+            node = self.graph.get_node(node_id)
+            if node:
+                chunk_ids.update(node.source_chunks)
+        return sorted(chunk_ids)
 
     def _extract_key_entities(self, node_ids: List[str], max_entities: int = 10) -> List[Dict[str, str]]:
         """Extract key entities from a community."""

@@ -13,7 +13,12 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from prompt_loader import get_prompt, format_prompt
+try:
+    from prompt_loader import get_prompt, format_prompt
+except ModuleNotFoundError:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from prompt_loader import get_prompt, format_prompt
 
 from .retrieval_tools import RetrievalToolkit, ToolResult
 
@@ -308,7 +313,7 @@ class ReActRetriever:
                     )
 
                 # Execute action
-                if action and action_input:
+                if action and action_input is not None:
                     tool_result = self.toolkit.execute_tool(action, **action_input)
                     observation = self._format_observation(tool_result)
                     step.observation = observation
@@ -357,20 +362,26 @@ class ReActRetriever:
         if isinstance(data, list):
             if len(data) == 0:
                 return "No results found."
+            # For entity listings and type discovery, show more items
+            is_entity_listing = tool_result.tool_name in ("list_entities", "list_entity_types")
+            max_items = 20 if is_entity_listing else 5
             # Summarize list results
             summaries = []
-            for item in data[:5]:  # Limit to 5 items
+            for item in data[:max_items]:
                 if isinstance(item, dict):
                     # Format dict nicely — always include IDs so the agent can reference them
                     summary_parts = []
-                    for key in ['chunk_id', 'community_id', 'path_id', 'description', 'summary', 'text', 'name', 'path_type']:
+                    for key in ['chunk_id', 'community_id', 'path_id', 'type', 'count', 'description', 'summary', 'text', 'name', 'path_type', 'connections']:
                         if key in item:
                             value = str(item[key])[:200]
                             summary_parts.append(f"{key}: {value}")
-                    summaries.append(" | ".join(summary_parts[:4]))
+                    summaries.append(" | ".join(summary_parts[:5]))
                 else:
                     summaries.append(str(item)[:100])
-            return f"Found {len(data)} results:\n" + "\n".join(f"- {s}" for s in summaries)
+            result_text = f"Found {len(data)} results:\n" + "\n".join(f"- {s}" for s in summaries)
+            if len(data) > max_items:
+                result_text += f"\n... and {len(data) - max_items} more"
+            return result_text
 
         elif isinstance(data, dict):
             # Format single result
@@ -400,11 +411,15 @@ class ReActRetriever:
                     elif 'community_id' in item:
                         source['community_id'] = item['community_id']
                         source['type'] = 'community'
+                        # Promote community source chunks to individual chunk sources
+                        for cid in item.get('source_chunk_ids', [])[:10]:
+                            sources.append({'chunk_id': cid, 'type': 'chunk'})
                     elif 'path_id' in item:
                         source['path_id'] = item['path_id']
                         source['type'] = 'path'
-                        if 'evidence_chunks' in item:
-                            source['evidence_chunks'] = item['evidence_chunks']
+                        # Promote evidence_chunks to individual chunk sources
+                        for eid in item.get('evidence_chunks', [])[:5]:
+                            sources.append({'chunk_id': eid, 'type': 'chunk'})
                     if source:
                         sources.append(source)
 

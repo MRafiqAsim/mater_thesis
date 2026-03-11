@@ -264,29 +264,98 @@ class HybridRetriever:
             missing_info=missing_info,
         )
 
+    def _detect_aggregate_type(self, query: str) -> Optional[List[str]]:
+        """Detect if query asks for a list of entities and return matching entity types.
+
+        Returns a list of entity types to try (primary + related fallbacks).
+        For example, 'projects' → ['PRODUCT', 'DOCUMENT', 'CONCEPT'] because
+        emails may label work items differently than the user's terminology.
+        """
+        import re
+        query_lower = query.lower()
+
+        # Map user terms to primary + fallback entity types
+        type_patterns = {
+            r"(project|initiative|task|work item|topic|subject)": ["PRODUCT", "DOCUMENT", "CONCEPT"],
+            r"(product|system|tool|software|application|platform)": ["PRODUCT"],
+            r"(people|person|employee|team member|participant|who)": ["PERSON"],
+            r"(organization|company|department|team|vendor|supplier|client)": ["ORG"],
+            r"(event|meeting|milestone|deadline|conference)": ["EVENT"],
+            r"(document|report|file|attachment|specification)": ["DOCUMENT"],
+            r"(location|city|country|office|place|region)": ["GPE"],
+        }
+
+        # Check for listing/aggregate intent
+        if not re.search(r"(list|all|every|what are|provide|show|give me|how many|which)", query_lower):
+            return None
+
+        for pattern, entity_types in type_patterns.items():
+            if re.search(pattern, query_lower):
+                return entity_types
+
+        return None
+
     def _graphrag_retrieve(self, query: str) -> RetrievalResult:
-        """GraphRAG: Community-based retrieval."""
+        """GraphRAG: Community-based retrieval with entity listing for aggregate queries."""
+        # Check for aggregate/listing queries
+        aggregate_type = self._detect_aggregate_type(query)
+        extra_context = ""
+
+        if aggregate_type:
+            # List entities for each type (primary + fallbacks)
+            for etype in aggregate_type:
+                entity_list_result = self.toolkit.list_entities(etype)
+                if entity_list_result.success and entity_list_result.data:
+                    entity_names = [e["name"] for e in entity_list_result.data]
+                    extra_context += (
+                        f"{etype} entities in the knowledge graph "
+                        f"({len(entity_names)} total):\n"
+                        + "\n".join(f"- {name}" for name in entity_names)
+                        + "\n\n"
+                    )
+
+            # Also include thread subjects as work items / projects
+            if self.silver_path:
+                thread_subjects = self._get_all_thread_subjects()
+                if thread_subjects:
+                    extra_context += (
+                        f"All email thread subjects (work items/topics discussed, "
+                        f"{len(thread_subjects)} total):\n"
+                        + "\n".join(f"- {s}" for s in sorted(thread_subjects))
+                        + "\n\n"
+                    )
+
         # Search communities
         community_result = self.toolkit.graphrag_search(query, level=0, top_k=3)
 
         if not community_result.success or not community_result.data:
-            return self._vector_retrieve(query)
+            if not extra_context:
+                return self._vector_retrieve(query)
 
-        # Collect chunks from community entities
+        # Collect chunks from community source_chunk_ids (or fallback to entity lookup)
         chunks = []
         community_summaries = []
 
-        for community in community_result.data:
-            community_summaries.append(community.get("summary", ""))
+        if community_result.success and community_result.data:
+            for community in community_result.data:
+                community_summaries.append(community.get("summary", ""))
 
-            # Get chunks for key entities
-            for entity in community.get("key_entities", [])[:3]:
-                entity_result = self.toolkit.entity_lookup(entity.get("name", ""))
-                if entity_result.success and entity_result.data:
-                    for chunk_id in entity_result.data.get("source_chunks", [])[:3]:
+                # Prefer direct source_chunk_ids from community
+                source_chunks = community.get("source_chunk_ids", [])
+                if source_chunks:
+                    for chunk_id in source_chunks[:10]:
                         chunk_result = self.toolkit.get_chunk_context(chunk_id)
                         if chunk_result.success and chunk_result.data:
                             chunks.append(chunk_result.data)
+                else:
+                    # Fallback: get chunks via entity lookup (for old community files)
+                    for entity in community.get("key_entities", [])[:3]:
+                        entity_result = self.toolkit.entity_lookup(entity.get("name", ""))
+                        if entity_result.success and entity_result.data:
+                            for chunk_id in entity_result.data.get("source_chunks", [])[:3]:
+                                chunk_result = self.toolkit.get_chunk_context(chunk_id)
+                                if chunk_result.success and chunk_result.data:
+                                    chunks.append(chunk_result.data)
 
         # Deduplicate chunks
         seen_ids = set()
@@ -299,12 +368,12 @@ class HybridRetriever:
 
         chunks = unique_chunks[:self.config.top_k_per_strategy]
 
-        # Generate answer with community context
+        # Generate answer with community context + entity listing
         answer = ""
         is_grounded = True
         missing_info = None
         if self.config.use_llm_answer:
-            community_context = "\n\n".join([
+            community_context = extra_context + "\n\n".join([
                 f"Community Context: {s}" for s in community_summaries
             ])
             answer, is_grounded, missing_info = self._generate_answer(
@@ -384,6 +453,27 @@ class HybridRetriever:
         if self.config.use_llm_answer and final_chunks:
             # Include context from all strategies
             extra_context = ""
+
+            # For aggregate queries, include entity listing + thread subjects
+            aggregate_type = self._detect_aggregate_type(query)
+            if aggregate_type:
+                for etype in aggregate_type:
+                    entity_list_result = self.toolkit.list_entities(etype)
+                    if entity_list_result.success and entity_list_result.data:
+                        entity_names = [e["name"] for e in entity_list_result.data]
+                        extra_context += (
+                            f"{etype} entities ({len(entity_names)} total):\n"
+                            + "\n".join(f"- {name}" for name in entity_names)
+                            + "\n\n"
+                        )
+                thread_subjects = self._get_all_thread_subjects()
+                if thread_subjects:
+                    extra_context += (
+                        f"All email thread subjects ({len(thread_subjects)} total):\n"
+                        + "\n".join(f"- {s}" for s in sorted(thread_subjects))
+                        + "\n\n"
+                    )
+
             if pathrag_result.metadata.get("paths_found", 0) > 0:
                 extra_context += f"Found {pathrag_result.metadata['paths_found']} reasoning paths.\n"
             if graphrag_result.metadata.get("community_summaries"):
@@ -418,13 +508,30 @@ class HybridRetriever:
         """ReAct: Autonomous agent retrieval."""
         react_result = self.react_retriever.query(query)
 
-        # Convert ReAct result to standard result
+        # Convert ReAct sources to chunks
         chunks = []
+        seen_chunk_ids = set()
         for source in react_result.sources:
-            if source.get("type") == "chunk":
-                chunk_result = self.toolkit.get_chunk_context(source.get("chunk_id", ""))
+            chunk_id = source.get("chunk_id", "")
+            if source.get("type") == "chunk" and chunk_id and chunk_id not in seen_chunk_ids:
+                chunk_result = self.toolkit.get_chunk_context(chunk_id)
                 if chunk_result.success and chunk_result.data:
                     chunks.append(chunk_result.data)
+                    seen_chunk_ids.add(chunk_id)
+
+        # Fallback: if the agent produced an answer but no chunk sources
+        # (e.g. used only list_entities/graphrag), run a vector search for evidence
+        if react_result.answer and not chunks:
+            logger.info("ReAct produced answer but no chunk sources — running fallback vector search")
+            vector_result = self.toolkit.vector_search(query, top_k=10)
+            if vector_result.success and vector_result.data:
+                for item in vector_result.data:
+                    cid = item.get("chunk_id", "")
+                    if cid and cid not in seen_chunk_ids:
+                        chunk_result = self.toolkit.get_chunk_context(cid)
+                        if chunk_result.success and chunk_result.data:
+                            chunks.append(chunk_result.data)
+                            seen_chunk_ids.add(cid)
 
         return RetrievalResult(
             query=query,
@@ -441,28 +548,127 @@ class HybridRetriever:
             }
         )
 
+    def _get_all_thread_subjects(self) -> List[str]:
+        """Get all unique thread subjects from silver layer."""
+        if not self.silver_path:
+            return []
+
+        subjects = set()
+        silver = Path(self.silver_path)
+        for folder in ["thread_chunks", "individual_chunks"]:
+            folder_path = silver / folder
+            if not folder_path.exists():
+                continue
+            for f in folder_path.glob("*.json"):
+                try:
+                    with open(f, 'r', encoding='utf-8') as fh:
+                        data = json.load(fh)
+                    subj = data.get("thread_subject", "")
+                    if subj:
+                        subjects.add(subj)
+                except Exception:
+                    pass
+        return list(subjects)
+
     def _extract_query_entities(self, query: str) -> List[str]:
-        """Extract potential entity names from query."""
-        # Simple extraction: capitalized words and quoted phrases
+        """
+        Extract potential entity names from query and match against known graph entities.
+
+        Strategy:
+        1. Extract quoted phrases, capitalized words, and acronyms from query
+        2. Fuzzy-match all query terms against known graph entity names
+        3. Return matched graph entities (enables PathRAG even with lowercase queries)
+        """
         import re
 
         entities = []
+        stop_words = {
+            # Question words
+            'the', 'a', 'an', 'what', 'who', 'where', 'when', 'how', 'why', 'which',
+            'did', 'does', 'do', 'is', 'are', 'was', 'were', 'and', 'or', 'but',
+            # Request verbs
+            'about', 'tell', 'me', 'can', 'you', 'find', 'show', 'get', 'give',
+            'provide', 'list', 'all', 'every', 'any', 'some',
+            # Generic nouns (not entity names)
+            'project', 'projects', 'email', 'emails', 'thread', 'threads',
+            'information', 'details', 'data', 'discussed', 'mentioned',
+            'people', 'person', 'things', 'stuff', 'work', 'used',
+            # Prepositions
+            'in', 'on', 'at', 'to', 'for', 'of', 'with', 'from', 'by',
+        }
 
-        # Quoted phrases
+        # 1. Quoted phrases (highest priority)
         quoted = re.findall(r'"([^"]+)"', query)
         entities.extend(quoted)
 
-        # Capitalized words (potential proper nouns)
+        # 2. Capitalized words and acronyms (any length)
         words = query.split()
         for word in words:
-            # Skip common words
-            if word.lower() in {'the', 'a', 'an', 'what', 'who', 'where', 'when', 'how', 'why',
-                               'did', 'does', 'do', 'is', 'are', 'was', 'were', 'and', 'or', 'but'}:
+            clean = re.sub(r'[?.!,]$', '', word)
+            if clean.lower() in stop_words:
                 continue
-            if word[0].isupper() and len(word) > 2:
-                entities.append(word)
+            if clean.isupper() and len(clean) >= 2:  # Acronyms: GT, SQL, UAT
+                entities.append(clean)
+            elif clean[0:1].isupper() and len(clean) > 1:
+                entities.append(clean)
 
+        # 3. Build multi-word candidates from non-stop words
+        content_words = [re.sub(r'[?.!,]$', '', w) for w in words
+                        if w.lower() not in stop_words and len(w) > 1]
+        if len(content_words) >= 2:
+            # Try bigrams and trigrams
+            for i in range(len(content_words)):
+                for j in range(i + 2, min(i + 4, len(content_words) + 1)):
+                    phrase = " ".join(content_words[i:j])
+                    entities.append(phrase)
+        # Also add individual content words (only if they're meaningful)
+        entities.extend(content_words)
+
+        # 4. Match against known graph entities (fuzzy, case-insensitive)
+        matched = self._match_graph_entities(list(set(entities)))
+
+        # Return graph-matched entities if found, otherwise raw extractions
+        if matched:
+            return matched
         return list(set(entities))
+
+    def _match_graph_entities(self, candidates: List[str]) -> List[str]:
+        """Match candidate strings against known graph entity names."""
+        if not self.gold_path:
+            return candidates
+
+        # Load graph entity names (cached)
+        if not hasattr(self, '_graph_entity_names'):
+            self._graph_entity_names = {}
+            graph_file = Path(self.gold_path) / "knowledge_graph" / "nodes.json"
+            if graph_file.exists():
+                try:
+                    with open(graph_file, 'r', encoding='utf-8') as f:
+                        graph_data = json.load(f)
+                    for node_id, node in graph_data.items():
+                        name = node.get("name", node_id)
+                        node_type = node.get("node_type", node.get("type", ""))
+                        if name and node_type not in ("CHUNK", "THREAD", ""):
+                            self._graph_entity_names[name.lower()] = name
+                except Exception:
+                    pass
+
+        if not self._graph_entity_names:
+            return candidates
+
+        matched = []
+        for candidate in candidates:
+            candidate_lower = candidate.lower()
+            # Exact match
+            if candidate_lower in self._graph_entity_names:
+                matched.append(self._graph_entity_names[candidate_lower])
+                continue
+            # Substring match (graph entity contains candidate or vice versa)
+            for graph_lower, graph_name in self._graph_entity_names.items():
+                if candidate_lower in graph_lower or graph_lower in candidate_lower:
+                    matched.append(graph_name)
+
+        return list(set(matched))
 
     def _expand_by_thread(
         self,
@@ -470,10 +676,15 @@ class HybridRetriever:
         max_siblings: int = 5
     ) -> List[Dict[str, Any]]:
         """
-        Expand retrieval results by fetching sibling chunks from the same thread.
+        Expand retrieval results by fetching sibling chunks and summaries
+        from the same thread.
 
-        When a chunk is retrieved, also pull in other email/attachment chunks
-        from the same conversation thread so the LLM sees the full picture.
+        When a chunk is retrieved, also pull in:
+        1. Sibling email/attachment chunks from the same thread
+        2. Thread summary (if available)
+        3. Attachment summaries (if available)
+
+        This gives the LLM full context regardless of which entry point was hit.
         """
         if not self.silver_path:
             return chunks
@@ -490,7 +701,7 @@ class HybridRetriever:
         if not thread_ids:
             return chunks
 
-        # Search Silver layer for sibling chunks
+        # 1. Search Silver layer for sibling chunks
         search_dirs = [
             self.silver_path / "thread_chunks",
             self.silver_path / "individual_chunks",
@@ -525,10 +736,67 @@ class HybridRetriever:
                 except Exception:
                     continue
 
-        if sibling_chunks:
-            logger.info(f"Thread expansion: added {len(sibling_chunks)} sibling chunks from {len(thread_ids)} threads")
+        # 2. Load thread summaries for matched threads
+        summary_context = []
+        thread_summaries_dir = self.silver_path / "thread_summaries"
+        if thread_summaries_dir.exists():
+            for summary_file in thread_summaries_dir.glob("*.json"):
+                try:
+                    with open(summary_file, 'r', encoding='utf-8') as f:
+                        summary_data = json.load(f)
+                    if summary_data.get("thread_id") in thread_ids:
+                        summary_text = summary_data.get("summary", "")
+                        if summary_text:
+                            summary_context.append({
+                                "chunk_id": f"summary_{summary_data['thread_id']}",
+                                "text": f"[Thread Summary] {summary_data.get('subject', '')}: {summary_text}",
+                                "thread_id": summary_data["thread_id"],
+                                "source_type": "thread_summary",
+                                "similarity_score": 0.0,
+                                "_expanded": True,
+                            })
+                            # 3. Follow cross-references to attachment summaries
+                            for att_id in summary_data.get("attachment_ids", []):
+                                att_summary = self._load_attachment_summary(att_id)
+                                if att_summary:
+                                    summary_context.append({
+                                        "chunk_id": f"att_summary_{att_id}",
+                                        "text": f"[Attachment: {att_summary.get('filename', '')}] {att_summary.get('summary', '')}",
+                                        "thread_id": summary_data["thread_id"],
+                                        "source_type": "attachment_summary",
+                                        "similarity_score": 0.0,
+                                        "_expanded": True,
+                                    })
+                except Exception:
+                    continue
 
-        return list(chunks) + sibling_chunks
+        expanded_count = len(sibling_chunks) + len(summary_context)
+        if expanded_count:
+            logger.info(
+                f"Thread expansion: added {len(sibling_chunks)} sibling chunks, "
+                f"{len(summary_context)} summaries from {len(thread_ids)} threads"
+            )
+
+        return list(chunks) + sibling_chunks + summary_context
+
+    def _load_attachment_summary(self, attachment_id: str) -> Optional[Dict[str, Any]]:
+        """Load an attachment summary by ID from Silver layer."""
+        if not self.silver_path:
+            return None
+        summary_dir = self.silver_path / "attachment_summaries"
+        if not summary_dir.exists():
+            return None
+        # Try exact match and sanitized match
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in attachment_id)[:100]
+        for candidate in (f"{attachment_id}.json", f"{safe_id}.json"):
+            path = summary_dir / candidate
+            if path.exists():
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+        return None
 
     def _calculate_confidence(self, chunks: List[Dict[str, Any]]) -> float:
         """Calculate confidence score based on retrieved chunks."""

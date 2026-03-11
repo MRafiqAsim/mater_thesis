@@ -238,8 +238,31 @@ Examples:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # Determine API key
+    # Determine API key and auto-detect Azure from env
     api_key = args.azure_key or args.openai_key or os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+    # Auto-enable Azure if env vars are set and --use-azure wasn't explicitly given
+    if not args.use_azure and os.environ.get("AZURE_OPENAI_API_KEY") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
+        args.use_azure = True
+        if not args.azure_endpoint or args.azure_endpoint == "https://muham-mll3ne3p-eastus2.cognitiveservices.azure.com/":
+            args.azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", args.azure_endpoint)
+        logger.info("Auto-detected Azure OpenAI from environment variables")
+
+    # --mode llm/hybrid implies LLM for all sub-strategies (unless explicitly overridden)
+    if args.mode == "llm":
+        if args.kg_strategy == "spacy":
+            args.kg_strategy = "llm"
+        if args.rel_strategy == "cooccurrence":
+            args.rel_strategy = "llm"
+        if not args.with_summaries:
+            args.with_summaries = True
+    elif args.mode == "hybrid":
+        if args.kg_strategy == "spacy":
+            args.kg_strategy = "hybrid"
+        if args.rel_strategy == "cooccurrence":
+            args.rel_strategy = "hybrid"
+        if not args.with_summaries:
+            args.with_summaries = True
 
     # Check if LLM/hybrid mode or strategy requires API key
     if args.mode in ["llm", "hybrid"] or args.kg_strategy in ["llm", "hybrid"] or args.rel_strategy in ["llm", "hybrid"]:
@@ -345,12 +368,16 @@ Examples:
     print(f"Relationships extracted: {stats['kg_relationships_extracted']}")
     print(f"Attachments processed: {stats.get('attachments_processed', 0)}")
     print(f"Attachments with text: {stats.get('attachments_with_text', 0)}")
+    print(f"Attachment summaries:  {stats.get('attachment_summaries_generated', 0)}")
+    print(f"Threads technical:     {stats.get('threads_technical', 0)}")
+    print(f"Threads non-technical: {stats.get('threads_skipped_non_technical', 0)} (skipped)")
     print(f"Errors:                {stats['errors']}")
 
     print(f"\nOutput:")
     print(f"  Thread chunks:    {silver_path}/thread_chunks/")
     print(f"  Single chunks:    {silver_path}/individual_chunks/")
     print(f"  Thread summaries: {silver_path}/thread_summaries/")
+    print(f"  Non-technical:    {silver_path}/non_technical/")
     print(f"  Processing mode:  {args.mode.upper()}")
     print("=" * 60)
 

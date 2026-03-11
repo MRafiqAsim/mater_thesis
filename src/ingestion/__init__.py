@@ -8,6 +8,7 @@ from .language_detector import LanguageDetector
 from .bronze_loader import BronzeLayerLoader
 from .attachment_processor import AttachmentProcessor, AttachmentContent
 from .attachment_classifier import AttachmentClassifier, ClassificationResult
+from .email_sensitivity_classifier import EmailSensitivityClassifier, LLMSensitivityClassifier, SensitivityResult
 
 __all__ = [
     "PSTExtractor",
@@ -22,4 +23,7 @@ __all__ = [
     "AttachmentContent",
     "AttachmentClassifier",
     "ClassificationResult",
+    "EmailSensitivityClassifier",
+    "LLMSensitivityClassifier",
+    "SensitivityResult",
 ]

@@ -14,6 +14,7 @@ from typing import List, Optional, Dict, Any, Union, Iterator
 
 from .pst_extractor import EmailMessage
 from .document_parser import ParsedDocument
+from .email_sensitivity_classifier import EmailSensitivityClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,9 @@ class BronzeLayerLoader:
         self,
         bronze_path: str,
         storage_type: str = "local",
-        azure_config: Optional[Dict[str, str]] = None
+        azure_config: Optional[Dict[str, str]] = None,
+        classify_sensitivity: bool = True,
+        sensitivity_rules_path: Optional[str] = None,
     ):
         """
         Initialize the Bronze layer loader.
@@ -53,10 +56,19 @@ class BronzeLayerLoader:
             bronze_path: Base path for Bronze layer
             storage_type: "local" or "azure"
             azure_config: Azure storage configuration (for ADLS)
+            classify_sensitivity: Run email sensitivity classifier on ingest
+            sensitivity_rules_path: Path to custom sensitivity_rules.yaml
         """
         self.bronze_path = Path(bronze_path)
         self.storage_type = storage_type
         self.azure_config = azure_config
+
+        # Email sensitivity classifier
+        self.sensitivity_classifier = None
+        if classify_sensitivity:
+            self.sensitivity_classifier = EmailSensitivityClassifier(
+                rules_path=sensitivity_rules_path
+            )
 
         # Create directory structure for local storage
         if storage_type == "local":
@@ -113,6 +125,14 @@ class BronzeLayerLoader:
             email_path = email_dir / f"{email.message_id}.json"
 
             email_data = email.to_dict()
+
+            # Classify sensitivity (technical vs sensitive)
+            if self.sensitivity_classifier:
+                try:
+                    sens_result = self.sensitivity_classifier.classify(email_data)
+                    email_data["sensitivity"] = sens_result.to_dict()
+                except Exception as e:
+                    logger.warning(f"Sensitivity classification failed for {email.message_id}: {e}")
 
             if self.storage_type == "local":
                 with open(email_path, "w", encoding="utf-8") as f:

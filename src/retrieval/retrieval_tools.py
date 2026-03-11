@@ -200,6 +200,33 @@ class RetrievalToolkit:
             function=self.entity_lookup
         )
 
+        # List Entities by Type
+        self.tools["list_entities"] = Tool(
+            name="list_entities",
+            description="List all entities of a given type from the knowledge graph. "
+                       "Use this for aggregate questions like 'list all projects', 'who are the people', "
+                       "'what organizations are mentioned'. "
+                       "Valid types: PERSON, ORG, PRODUCT, GPE, DOCUMENT, EVENT, LOC, FAC, WORK_OF_ART.",
+            parameters={
+                "entity_type": {
+                    "type": "string",
+                    "description": "The entity type to list (e.g., PRODUCT, PERSON, ORG)",
+                    "required": True
+                }
+            },
+            function=self.list_entities
+        )
+
+        # List Entity Types
+        self.tools["list_entity_types"] = Tool(
+            name="list_entity_types",
+            description="Discover what entity types exist in the knowledge graph and how many of each. "
+                       "Use this FIRST for aggregate/listing queries to understand what data is available "
+                       "before searching for specific types.",
+            parameters={},
+            function=self.list_entity_types
+        )
+
         # Get Chunk Context
         self.tools["get_chunk_context"] = Tool(
             name="get_chunk_context",
@@ -443,6 +470,7 @@ class RetrievalToolkit:
                     "summary": comm.get("summary"),
                     "key_topics": comm.get("key_topics", []),
                     "key_entities": comm.get("key_entities", [])[:5],
+                    "source_chunk_ids": comm.get("source_chunk_ids", []),
                     "relevance_score": score
                 })
 
@@ -531,6 +559,104 @@ class RetrievalToolkit:
             logger.error(f"Vector search failed: {e}")
             return ToolResult(
                 tool_name="vector_search",
+                success=False,
+                data=[],
+                message=str(e)
+            )
+
+    def list_entities(self, entity_type: str) -> ToolResult:
+        """List all entities of a given type from the knowledge graph."""
+        start_time = datetime.now()
+
+        try:
+            # Load nodes directly from JSON
+            nodes_file = self.gold_path / "knowledge_graph" / "nodes.json"
+            if not nodes_file.exists():
+                return ToolResult(
+                    tool_name="list_entities",
+                    success=False,
+                    data=[],
+                    message="Knowledge graph nodes not found"
+                )
+
+            with open(nodes_file, 'r', encoding='utf-8') as f:
+                nodes = json.load(f)
+
+            entity_type_upper = entity_type.upper()
+            entities = []
+
+            for node_id, node_data in nodes.items():
+                node_type = node_data.get("node_type", node_data.get("type", ""))
+                if node_type == entity_type_upper:
+                    name = node_data.get("name", node_id)
+                    mention_count = node_data.get("mention_count", 0)
+                    entities.append({
+                        "name": name,
+                        "type": entity_type_upper,
+                        "connections": mention_count,
+                    })
+
+            # Sort by mention count (most mentioned first)
+            entities.sort(key=lambda x: x["connections"], reverse=True)
+
+            execution_time = (datetime.now() - start_time).total_seconds()
+
+            return ToolResult(
+                tool_name="list_entities",
+                success=True,
+                data=entities,
+                message=f"Found {len(entities)} entities of type {entity_type_upper}",
+                execution_time=execution_time
+            )
+
+        except Exception as e:
+            return ToolResult(
+                tool_name="list_entities",
+                success=False,
+                data=[],
+                message=str(e)
+            )
+
+    def list_entity_types(self) -> ToolResult:
+        """Discover what entity types exist in the knowledge graph."""
+        start_time = datetime.now()
+
+        try:
+            nodes_file = self.gold_path / "knowledge_graph" / "nodes.json"
+            if not nodes_file.exists():
+                return ToolResult(
+                    tool_name="list_entity_types",
+                    success=False,
+                    data=[],
+                    message="Knowledge graph nodes not found"
+                )
+
+            with open(nodes_file, 'r', encoding='utf-8') as f:
+                nodes = json.load(f)
+
+            # Count entities per type
+            type_counts = {}
+            for node_id, node_data in nodes.items():
+                node_type = node_data.get("node_type", node_data.get("type", "UNKNOWN"))
+                type_counts[node_type] = type_counts.get(node_type, 0) + 1
+
+            # Sort by count descending
+            sorted_types = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)
+            results = [{"type": t, "count": c} for t, c in sorted_types]
+
+            execution_time = (datetime.now() - start_time).total_seconds()
+
+            return ToolResult(
+                tool_name="list_entity_types",
+                success=True,
+                data=results,
+                message=f"Found {len(results)} entity types: " + ", ".join(f"{t}({c})" for t, c in sorted_types),
+                execution_time=execution_time
+            )
+
+        except Exception as e:
+            return ToolResult(
+                tool_name="list_entity_types",
                 success=False,
                 data=[],
                 message=str(e)

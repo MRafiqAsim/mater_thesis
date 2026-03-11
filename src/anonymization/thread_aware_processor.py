@@ -25,6 +25,7 @@ from ingestion.chunker import SemanticChunker, Chunk
 from ingestion.language_detector import LanguageDetector
 from ingestion.attachment_processor import AttachmentProcessor
 from ingestion.email_text_cleaner import clean_email_text
+from ingestion.email_sensitivity_classifier import EmailSensitivityClassifier, LLMSensitivityClassifier, SensitivityResult
 from anonymization.pii_detector import PIIDetector
 from anonymization.anonymizer import Anonymizer, AnonymizationStrategy
 from extraction.kg_entity_extractor import (
@@ -83,6 +84,9 @@ class ThreadChunk:
     attachment_classification: str = ""            # "knowledge" | "transactional" | ""
     classification_confidence: float = 0.0        # 0.0–1.0 from Bronze classifier
 
+    # Sensitivity
+    anonymization_skipped: bool = False  # True if thread was classified as technical
+
     # Metadata
     language: str = "en"
     processing_mode: str = "local"
@@ -111,6 +115,7 @@ class ThreadChunk:
             "source_attachment_filename": self.source_attachment_filename,
             "attachment_classification": self.attachment_classification,
             "classification_confidence": self.classification_confidence,
+            "anonymization_skipped": self.anonymization_skipped,
             "language": self.language,
             "processing_mode": self.processing_mode,
             "processing_time": self.processing_time.isoformat(),
@@ -129,6 +134,7 @@ class ThreadSummary:
     summary: str
     key_topics: List[str]
     chunk_ids: List[str]
+    attachment_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -140,6 +146,31 @@ class ThreadSummary:
             "summary": self.summary,
             "key_topics": self.key_topics,
             "chunk_ids": self.chunk_ids,
+            "attachment_ids": self.attachment_ids,
+        }
+
+
+@dataclass
+class AttachmentSummary:
+    """Summary of an email attachment for retrieval context"""
+
+    attachment_id: str
+    thread_id: str
+    filename: str
+    summary: str
+    chunk_ids: List[str]
+    classification: str = "knowledge"
+    token_count: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "attachment_id": self.attachment_id,
+            "thread_id": self.thread_id,
+            "filename": self.filename,
+            "summary": self.summary,
+            "chunk_ids": self.chunk_ids,
+            "classification": self.classification,
+            "token_count": self.token_count,
         }
 
 
@@ -284,6 +315,21 @@ class ThreadAwareProcessor:
         self.azure_api_version = azure_api_version
         self.azure_deployment = azure_deployment
 
+        # Initialize sensitivity classifier
+        # LLM/hybrid modes use GPT-4o; local mode reads Bronze regex classification
+        self.llm_sensitivity_classifier = None
+        if processing_mode in ("llm", "hybrid") and openai_api_key:
+            try:
+                self.llm_sensitivity_classifier = LLMSensitivityClassifier(
+                    api_key=openai_api_key,
+                    use_azure=use_azure,
+                    azure_endpoint=azure_endpoint,
+                    azure_api_version=azure_api_version,
+                    azure_deployment=azure_deployment,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to init LLM sensitivity classifier: {e}")
+
         # Initialize KG extractor (modular for benchmarking)
         if kg_extractor:
             self.kg_extractor = kg_extractor
@@ -334,10 +380,96 @@ class ThreadAwareProcessor:
             "attachments_with_text": 0,
             "attachments_skipped_non_knowledge": 0,
             "attachment_chunks_created": 0,
+            "attachment_summaries_generated": 0,
+            "threads_technical": 0,
+            "threads_skipped_non_technical": 0,
             "errors": 0,
             "start_time": None,
             "end_time": None,
         }
+
+    @staticmethod
+    def _clean_text(text: str) -> str:
+        """
+        Clean text for embedding-optimized downstream use.
+
+        Preserves all semantic content and context while removing noise
+        that degrades embedding quality:
+        - Email metadata headers (From:, Date:, Subject: lines already in chunk metadata)
+        - Thread/email separator lines (--- Email 1/2 ---)
+        - Quoted-reply markers (>)
+        - Redundant whitespace and control characters
+        - Email signatures and disclaimers
+        - Forwarded message boilerplate
+
+        Keeps: all substantive content, paragraph structure (as single newlines),
+        entity names, technical terms, decisions, facts.
+        """
+        import re
+
+        if not text:
+            return ""
+
+        lines = text.split('\n')
+        cleaned_lines = []
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Skip empty lines (will handle spacing later)
+            if not stripped:
+                continue
+
+            # Skip thread/email metadata headers (already in chunk metadata fields)
+            if re.match(r'^\[THREAD:', stripped, re.IGNORECASE):
+                continue
+            if re.match(r'^\[Participants:', stripped, re.IGNORECASE):
+                continue
+            if re.match(r'^\[Emails:\s*\d+\]', stripped, re.IGNORECASE):
+                continue
+            if re.match(r'^---\s*Email\s+\d+/\d+\s*---', stripped):
+                continue
+            if re.match(r'^---\s*Forwarded\s*---', stripped, re.IGNORECASE):
+                continue
+
+            # Skip email header lines (From:, Date:, Subject:, To:, Cc:, Sent:)
+            # but NOT lines where these words appear mid-sentence
+            if re.match(r'^(From|Date|Sent|To|Cc|Bcc|Subject):\s', stripped):
+                continue
+
+            # Remove quoted-reply markers but keep the content
+            stripped = re.sub(r'^>+\s*', '', stripped)
+
+            # Skip device/app boilerplate and disclaimers (keep regards/thanks for context)
+            if re.match(r'^(sent from my|get outlook|disclaimer|confidential|this email)',
+                        stripped, re.IGNORECASE):
+                continue
+            if re.match(r'^[-_=]{5,}$', stripped):
+                continue
+
+            # Skip lines that are just a person's name (likely signature, 1-3 words, all title case)
+            if re.match(r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}\s*$', stripped) and len(stripped) < 40:
+                # Only skip if it looks like a standalone name (not part of content)
+                if len(stripped.split()) <= 3:
+                    continue
+
+            # Normalize tabs to spaces
+            stripped = stripped.replace('\t', ' ')
+
+            # Collapse multiple spaces
+            stripped = re.sub(r' {2,}', ' ', stripped)
+
+            if stripped:
+                cleaned_lines.append(stripped)
+
+        # Join with single space — flat text is best for embedding models
+        # Embedding models don't benefit from newlines; dense text = better vectors
+        result = ' '.join(cleaned_lines)
+
+        # Final cleanup: collapse any remaining multiple spaces
+        result = re.sub(r' {2,}', ' ', result)
+
+        return result.strip()
 
     def _extract_kg_entities(self, text: str, language: str) -> Tuple[List[Dict[str, Any]], List[KGEntity]]:
         """
@@ -438,6 +570,41 @@ class ThreadAwareProcessor:
                 result.append(anon.anonymized_text)
         return result
 
+    def _should_anonymize_thread(self, thread: EmailThread) -> bool:
+        """
+        Check if a thread should be anonymized based on email sensitivity.
+
+        - LLM/hybrid modes: classify each email via GPT-4o
+        - Local mode: read the 'sensitivity' field from Bronze (regex-based)
+
+        If ANY email is classified as 'technical', the whole thread is
+        preserved (not anonymized).
+
+        Returns:
+            True if anonymization should proceed, False to skip it.
+        """
+        classifications = []
+
+        if self.llm_sensitivity_classifier:
+            # LLM mode: classify each email with GPT-4o
+            for email in thread.emails:
+                result = self.llm_sensitivity_classifier.classify(email)
+                classifications.append(result)
+                logger.debug(
+                    f"LLM sensitivity: '{email.get('email_headers', {}).get('subject', '')[:40]}' "
+                    f"→ {result.classification} ({result.confidence:.2f})"
+                )
+        else:
+            # Local mode: read Bronze-layer regex classification
+            for email in thread.emails:
+                sens_data = email.get("sensitivity")
+                if sens_data:
+                    classifications.append(SensitivityResult.from_dict(sens_data))
+                else:
+                    classifications.append(None)
+
+        return EmailSensitivityClassifier.should_anonymize_thread(classifications)
+
     def _extract_kg_relationships(
         self,
         text: str,
@@ -478,14 +645,19 @@ class ThreadAwareProcessor:
         participants: List[str],
         email_count: int,
         language: str,
-    ) -> List[ThreadChunk]:
+        should_anonymize: bool = True,
+    ) -> Tuple[List[ThreadChunk], List[str]]:
         """
         Process attachments separately from email body text.
 
-        Each attachment is classified, optionally truncated, chunked,
-        anonymized, and stored in attachment_chunks/.
+        Each attachment is classified, chunked, anonymized, summarized,
+        and stored in attachment_chunks/ and attachment_summaries/.
+
+        Returns:
+            Tuple of (all_chunks, attachment_ids) for cross-referencing.
         """
         chunks = []
+        attachment_ids = []
 
         for att_content in attachment_contents:
             if not att_content.extraction_success or not att_content.text.strip():
@@ -511,37 +683,46 @@ class ThreadAwareProcessor:
                 metadata={"filename": att_content.filename},
             )
 
+            # Track chunks per attachment for summary generation
+            att_chunk_objects = []
+
             for chunk in text_chunks:
-                # Anonymize
-                anon_result = self.anonymizer.anonymize(chunk.text, language)
-                self.stats["pii_detected"] += anon_result.entity_count
-
-                # Extract KG entities
+                # Extract KG entities — always needed
                 kg_entity_dicts, kg_entities_raw = self._extract_kg_entities(chunk.text, language)
-
-                # Extract relationships
                 kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
 
-                # Anonymize KG metadata
-                anon_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
-                anon_kg_rels = self._anonymize_kg_relationships(kg_relationships)
-                anon_participants = self._anonymize_participants(participants[:10])
+                if should_anonymize:
+                    anon_result = self.anonymizer.anonymize(chunk.text, language)
+                    self.stats["pii_detected"] += anon_result.entity_count
+                    anonymized_text = anon_result.anonymized_text
+                    pii_entities = [e.to_dict() for e in anon_result.entities]
+                    pii_count = anon_result.entity_count
+                    final_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
+                    final_kg_rels = self._anonymize_kg_relationships(kg_relationships)
+                    final_participants = self._anonymize_participants(participants)
+                else:
+                    anonymized_text = self._clean_text(chunk.text)
+                    pii_entities = []
+                    pii_count = 0
+                    final_kg_entities = kg_entity_dicts
+                    final_kg_rels = kg_relationships
+                    final_participants = participants
 
                 thread_chunk = ThreadChunk(
                     chunk_id=f"att_{att_content.attachment_id}_{chunk.chunk_index}",
                     thread_id=thread_id,
                     chunk_index=chunk.chunk_index,
                     text_original=chunk.text,
-                    text_anonymized=anon_result.anonymized_text,
+                    text_anonymized=anonymized_text,
                     token_count=chunk.token_count,
                     thread_subject=subject,
-                    thread_participants=anon_participants,
+                    thread_participants=final_participants,
                     thread_email_count=email_count,
                     email_position="attachment",
-                    pii_entities=[e.to_dict() for e in anon_result.entities],
-                    pii_count=anon_result.entity_count,
-                    kg_entities=anon_kg_entities,
-                    kg_relationships=anon_kg_rels,
+                    pii_entities=pii_entities,
+                    pii_count=pii_count,
+                    kg_entities=final_kg_entities,
+                    kg_relationships=final_kg_rels,
                     has_attachments=True,
                     attachment_count=1,
                     attachment_filenames=[att_content.filename],
@@ -549,16 +730,31 @@ class ThreadAwareProcessor:
                     source_attachment_filename=att_content.filename,
                     attachment_classification=classification,
                     classification_confidence=getattr(att_content, "classification_confidence", 0.0),
+                    anonymization_skipped=not should_anonymize,
                     language=language,
                     processing_mode=self.processing_mode,
                 )
 
                 chunks.append(thread_chunk)
+                att_chunk_objects.append(thread_chunk)
                 self._save_attachment_chunk(thread_chunk)
                 self.stats["attachment_chunks_created"] += 1
                 self.stats["chunks_created"] += 1
 
-        return chunks
+            # Generate per-attachment summary
+            if att_chunk_objects:
+                att_summary = self._generate_attachment_summary(
+                    attachment_id=att_content.attachment_id,
+                    filename=att_content.filename,
+                    thread_id=thread_id,
+                    chunks=att_chunk_objects,
+                    classification=classification,
+                    language=language,
+                )
+                if att_summary:
+                    attachment_ids.append(att_content.attachment_id)
+
+        return chunks, attachment_ids
 
     def _create_directories(self) -> None:
         """Create Silver layer directory structure"""
@@ -567,6 +763,8 @@ class ThreadAwareProcessor:
             self.silver_path / "thread_summaries",                    # Thread summaries
             self.silver_path / "individual_chunks",                   # Single email chunks
             self.silver_path / "attachment_chunks" / "knowledge",     # Knowledge attachments only
+            self.silver_path / "attachment_summaries",                # Per-attachment summaries
+            self.silver_path / "non_technical",                       # Skipped non-technical emails
             self.silver_path / "metadata",
         ]
 
@@ -637,6 +835,18 @@ class ThreadAwareProcessor:
         """Process a multi-email thread (attachments processed separately)"""
         chunks = []
 
+        # Check thread sensitivity — if any email is technical, process it
+        should_anonymize = self._should_anonymize_thread(thread)
+        if not should_anonymize:
+            self.stats["threads_technical"] += 1
+            logger.info(f"Thread '{thread.subject[:50]}' classified as technical — skipping anonymization")
+        else:
+            # Non-technical thread: skip processing entirely, save to non_technical/
+            self.stats["threads_skipped_non_technical"] += 1
+            self._save_non_technical(thread)
+            logger.info(f"Thread '{thread.subject[:50]}' classified as non-technical — skipping processing")
+            return chunks
+
         # Concatenate thread emails (body text only, no attachments)
         thread_text = thread.to_concatenated_text(include_metadata=True)
         thread_text = clean_email_text(thread_text)
@@ -682,20 +892,15 @@ class ThreadAwareProcessor:
 
         # Process each email body chunk
         for chunk in text_chunks:
-            # Anonymize
-            anon_result = self.anonymizer.anonymize(chunk.text, language)
-            self.stats["pii_detected"] += anon_result.entity_count
-
-            # Extract KG entities (for PathRAG)
+            # Extract KG entities (for PathRAG) — always needed
             kg_entity_dicts, kg_entities_raw = self._extract_kg_entities(chunk.text, language)
-
-            # Extract relationships between entities (for PathRAG)
             kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
 
-            # Anonymize KG metadata (entities, relationships, participants)
-            anon_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
-            anon_kg_rels = self._anonymize_kg_relationships(kg_relationships)
-            anon_participants = self._anonymize_participants(thread.participants[:10])
+            # Technical thread: store cleaned text (no anonymization)
+            anonymized_text = self._clean_text(chunk.text)
+            final_kg_entities = kg_entity_dicts
+            final_kg_rels = kg_relationships
+            final_participants = thread.participants
 
             # Create thread chunk (source_type="email")
             thread_chunk = ThreadChunk(
@@ -703,20 +908,21 @@ class ThreadAwareProcessor:
                 thread_id=thread.conversation_id,
                 chunk_index=chunk.chunk_index,
                 text_original=chunk.text,
-                text_anonymized=anon_result.anonymized_text,
+                text_anonymized=anonymized_text,
                 token_count=chunk.token_count,
                 thread_subject=thread.subject,
-                thread_participants=anon_participants,
+                thread_participants=final_participants,
                 thread_email_count=thread.email_count,
                 email_position=f"thread_{thread.email_count}_emails",
-                pii_entities=[e.to_dict() for e in anon_result.entities],
-                pii_count=anon_result.entity_count,
-                kg_entities=anon_kg_entities,
-                kg_relationships=anon_kg_rels,
+                pii_entities=[],
+                pii_count=0,
+                kg_entities=final_kg_entities,
+                kg_relationships=final_kg_rels,
                 has_attachments=has_attachments,
                 attachment_count=total_attachments,
                 attachment_filenames=all_attachment_filenames,
                 source_type="email",
+                anonymization_skipped=True,
                 language=language,
                 processing_mode=self.processing_mode,
             )
@@ -725,22 +931,24 @@ class ThreadAwareProcessor:
             self._save_thread_chunk(thread_chunk)
             self.stats["chunks_created"] += 1
 
-        # Process attachments separately → attachment_chunks/
+        # Process attachments separately → attachment_chunks/ + attachment_summaries/
+        attachment_ids = []
         if all_attachment_contents:
-            att_chunks = self._process_attachments_separately(
+            att_chunks, attachment_ids = self._process_attachments_separately(
                 attachment_contents=all_attachment_contents,
                 thread_id=thread.conversation_id,
                 subject=thread.subject,
                 participants=thread.participants,
                 email_count=thread.email_count,
                 language=language,
+                should_anonymize=False,  # Technical threads: no anonymization
             )
             chunks.extend(att_chunks)
 
-        # Generate thread summary (email body chunks only)
+        # Generate thread summary (email body chunks only, with attachment cross-refs)
         email_chunks = [c for c in chunks if c.source_type == "email"]
         if self.generate_summaries and email_chunks:
-            self._generate_thread_summary(thread, email_chunks, language)
+            self._generate_thread_summary(thread, email_chunks, language, attachment_ids=attachment_ids)
 
         return chunks
 
@@ -750,6 +958,17 @@ class ThreadAwareProcessor:
         email = thread.emails[0] if thread.emails else None
 
         if not email:
+            return chunks
+
+        # Check sensitivity — single email thread uses same logic
+        should_anonymize = self._should_anonymize_thread(thread)
+        if not should_anonymize:
+            self.stats["threads_technical"] += 1
+        else:
+            # Non-technical: skip processing, save to non_technical/
+            self.stats["threads_skipped_non_technical"] += 1
+            self._save_non_technical(thread)
+            logger.info(f"Email '{thread.subject[:50]}' classified as non-technical — skipping processing")
             return chunks
 
         # Get email body text only (no attachments)
@@ -789,20 +1008,15 @@ class ThreadAwareProcessor:
 
         # Process each email body chunk
         for chunk in text_chunks:
-            # Anonymize
-            anon_result = self.anonymizer.anonymize(chunk.text, language)
-            self.stats["pii_detected"] += anon_result.entity_count
-
-            # Extract KG entities (for PathRAG)
+            # Extract KG entities (for PathRAG) — always needed
             kg_entity_dicts, kg_entities_raw = self._extract_kg_entities(chunk.text, language)
-
-            # Extract relationships between entities (for PathRAG)
             kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
 
-            # Anonymize KG metadata
-            anon_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
-            anon_kg_rels = self._anonymize_kg_relationships(kg_relationships)
-            anon_participants = self._anonymize_participants(thread.participants[:10])
+            # Technical email: store cleaned text (no anonymization)
+            anonymized_text = self._clean_text(chunk.text)
+            final_kg_entities = kg_entity_dicts
+            final_kg_rels = kg_relationships
+            final_participants = thread.participants
 
             # Create chunk (source_type="email", stored in individual_chunks)
             thread_chunk = ThreadChunk(
@@ -810,20 +1024,21 @@ class ThreadAwareProcessor:
                 thread_id=thread.conversation_id,
                 chunk_index=chunk.chunk_index,
                 text_original=chunk.text,
-                text_anonymized=anon_result.anonymized_text,
+                text_anonymized=anonymized_text,
                 token_count=chunk.token_count,
                 thread_subject=thread.subject,
-                thread_participants=anon_participants,
+                thread_participants=final_participants,
                 thread_email_count=1,
                 email_position="1/1",
-                pii_entities=[e.to_dict() for e in anon_result.entities],
-                pii_count=anon_result.entity_count,
-                kg_entities=anon_kg_entities,
-                kg_relationships=anon_kg_rels,
+                pii_entities=[],
+                pii_count=0,
+                kg_entities=final_kg_entities,
+                kg_relationships=final_kg_rels,
                 has_attachments=has_attachments,
                 attachment_count=attachment_count,
                 attachment_filenames=attachment_filenames,
                 source_type="email",
+                anonymization_skipped=True,
                 language=language,
                 processing_mode=self.processing_mode,
             )
@@ -832,15 +1047,16 @@ class ThreadAwareProcessor:
             self._save_individual_chunk(thread_chunk)
             self.stats["chunks_created"] += 1
 
-        # Process attachments separately → attachment_chunks/
+        # Process attachments separately → attachment_chunks/ + attachment_summaries/
         if attachment_contents:
-            att_chunks = self._process_attachments_separately(
+            att_chunks, _att_ids = self._process_attachments_separately(
                 attachment_contents=attachment_contents,
                 thread_id=thread.conversation_id,
                 subject=thread.subject,
                 participants=thread.participants,
                 email_count=1,
                 language=language,
+                should_anonymize=False,  # Technical email: no anonymization
             )
             chunks.extend(att_chunks)
 
@@ -904,9 +1120,10 @@ class ThreadAwareProcessor:
         self,
         thread: EmailThread,
         chunks: List[ThreadChunk],
-        language: str
+        language: str,
+        attachment_ids: Optional[List[str]] = None,
     ) -> Optional[ThreadSummary]:
-        """Generate a summary for the thread"""
+        """Generate a summary for the thread with attachment cross-references."""
         # Build date range string
         date_range = ""
         if thread.start_date and thread.end_date:
@@ -927,18 +1144,138 @@ class ThreadAwareProcessor:
         summary = ThreadSummary(
             thread_id=thread.conversation_id,
             subject=thread.subject,
-            participants=[self._anonymize_participant(p) for p in thread.participants[:10]],
+            participants=thread.participants,
             email_count=thread.email_count,
             date_range=date_range,
             summary=summary_text,
             key_topics=key_topics,
             chunk_ids=[c.chunk_id for c in chunks],
+            attachment_ids=attachment_ids or [],
         )
 
         self._save_thread_summary(summary)
         self.stats["summaries_generated"] += 1
 
         return summary
+
+    def _generate_attachment_summary(
+        self,
+        attachment_id: str,
+        filename: str,
+        thread_id: str,
+        chunks: List[ThreadChunk],
+        classification: str,
+        language: str,
+    ) -> Optional[AttachmentSummary]:
+        """Generate and save a per-attachment summary."""
+        if not chunks:
+            return None
+
+        total_tokens = sum(c.token_count for c in chunks)
+        chunk_ids = [c.chunk_id for c in chunks]
+
+        # Generate summary text
+        if self.openai_api_key:
+            summary_text = self._generate_llm_attachment_summary(filename, chunks)
+        else:
+            summary_text = self._generate_simple_attachment_summary(filename, chunks)
+
+        att_summary = AttachmentSummary(
+            attachment_id=attachment_id,
+            thread_id=thread_id,
+            filename=filename,
+            summary=summary_text,
+            chunk_ids=chunk_ids,
+            classification=classification,
+            token_count=total_tokens,
+        )
+
+        self._save_attachment_summary(att_summary)
+        self.stats["attachment_summaries_generated"] += 1
+
+        return att_summary
+
+    def _generate_simple_attachment_summary(
+        self,
+        filename: str,
+        chunks: List[ThreadChunk],
+    ) -> str:
+        """Generate a simple extractive attachment summary."""
+        first_text = chunks[0].text_anonymized[:300]
+        return (
+            f"Attachment '{filename}' with {len(chunks)} chunk(s). "
+            f"Preview: {first_text}..."
+        )
+
+    def _generate_llm_attachment_summary(
+        self,
+        filename: str,
+        chunks: List[ThreadChunk],
+    ) -> str:
+        """Generate an LLM-based attachment summary scaled to document size."""
+        try:
+            if self.use_azure:
+                from openai import AzureOpenAI
+                import httpx
+                client = AzureOpenAI(
+                    api_key=self.openai_api_key,
+                    azure_endpoint=self.azure_endpoint,
+                    api_version=self.azure_api_version,
+                    timeout=httpx.Timeout(120.0, connect=10.0),
+                    max_retries=2,
+                )
+                model = self.azure_deployment or "gpt-4o"
+            else:
+                from openai import OpenAI
+                client = OpenAI(api_key=self.openai_api_key)
+                model = "gpt-4o-mini"
+
+            # Scale context window with document size
+            # Small docs (1-2 chunks): 4000 chars, large docs (10+): up to 12000
+            max_chars = min(12000, 4000 + len(chunks) * 1000)
+            combined_text = "\n\n".join([c.text_anonymized for c in chunks])[:max_chars]
+
+            from prompt_loader import get_prompt, format_prompt
+            user_template = get_prompt("silver", "attachment_summary", "user_prompt",
+                                       "Summarize this attachment:\nFilename: {filename}\nChunks: {chunk_count}\n\nContent:\n{content}\n\nSummary:")
+            user_prompt = format_prompt(
+                user_template,
+                filename=filename,
+                chunk_count=str(len(chunks)),
+                content=combined_text,
+            )
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": get_prompt("silver", "attachment_summary", "system_prompt",
+                                              "Summarize this document attachment proportional to its length.")
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    }
+                ],
+                temperature=get_prompt("silver", "attachment_summary", "temperature", 0.3),
+                max_tokens=get_prompt("silver", "attachment_summary", "max_tokens", 1000),
+            )
+
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            logger.warning(f"LLM attachment summary failed for '{filename}': {e}")
+            return self._generate_simple_attachment_summary(filename, chunks)
+
+    def _save_attachment_summary(self, summary: AttachmentSummary) -> None:
+        """Save attachment summary to Silver layer."""
+        summary_dir = self.silver_path / "attachment_summaries"
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in summary.attachment_id)[:100]
+        summary_file = summary_dir / f"{safe_id}.json"
+        with open(summary_file, "w", encoding="utf-8") as f:
+            json.dump(summary.to_dict(), f, indent=2, ensure_ascii=False, default=str)
 
     def _extract_key_topics(
         self,
@@ -1027,6 +1364,25 @@ class ThreadAwareProcessor:
         # Use the same anonymizer for consistency
         result = self.anonymizer.anonymize(participant, "en")
         return result.anonymized_text
+
+    def _save_non_technical(self, thread: EmailThread) -> None:
+        """Save a non-technical thread/email to the non_technical/ folder with full Bronze data."""
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in thread.conversation_id)[:100]
+        out_file = self.silver_path / "non_technical" / f"{safe_id}.json"
+
+        record = {
+            "thread_id": thread.conversation_id,
+            "subject": thread.subject,
+            "participants": thread.participants,
+            "email_count": thread.email_count,
+            "classification": "non_technical",
+            "reason": "Thread classified as non-technical (sensitive) — skipped processing",
+            "skipped_at": datetime.now().isoformat(),
+            "emails": thread.emails,  # Full Bronze email data for reference
+        }
+
+        with open(out_file, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2, ensure_ascii=False, default=str)
 
     def _save_thread_chunk(self, chunk: ThreadChunk) -> None:
         """Save thread chunk to Silver layer"""

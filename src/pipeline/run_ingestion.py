@@ -51,7 +51,9 @@ def extract_pst_to_bronze(
     pst_path: str,
     bronze_path: str,
     attachment_dir: Optional[str] = None,
-    max_emails: Optional[int] = None
+    max_emails: Optional[int] = None,
+    classify_sensitivity: bool = True,
+    sensitivity_rules_path: Optional[str] = None,
 ) -> dict:
     """
     Extract emails from PST file to Bronze layer.
@@ -60,6 +62,9 @@ def extract_pst_to_bronze(
         pst_path: Path to PST file
         bronze_path: Output Bronze layer path
         attachment_dir: Directory for attachments
+        max_emails: Maximum number of emails to extract
+        classify_sensitivity: Run email sensitivity classification
+        sensitivity_rules_path: Path to custom sensitivity_rules.yaml
 
     Returns:
         Extraction statistics
@@ -73,7 +78,11 @@ def extract_pst_to_bronze(
     )
 
     # Initialize loader
-    loader = BronzeLayerLoader(bronze_path=bronze_path)
+    loader = BronzeLayerLoader(
+        bronze_path=bronze_path,
+        classify_sensitivity=classify_sensitivity,
+        sensitivity_rules_path=sensitivity_rules_path,
+    )
 
     # Progress callback
     def progress(count, message):
@@ -314,7 +323,9 @@ def run_full_pipeline(
     output_path: str = "./data",
     ground_truth_path: Optional[str] = None,
     chunk_size: int = 512,
-    max_emails: Optional[int] = None
+    max_emails: Optional[int] = None,
+    classify_sensitivity: bool = True,
+    sensitivity_rules_path: Optional[str] = None,
 ) -> dict:
     """
     Run the full ingestion and anonymization pipeline.
@@ -344,7 +355,11 @@ def run_full_pipeline(
         logger.info("=" * 60)
         logger.info("STEP 1: PST Extraction → Bronze Layer")
         logger.info("=" * 60)
-        pst_stats = extract_pst_to_bronze(pst_path, bronze_path, max_emails=max_emails)
+        pst_stats = extract_pst_to_bronze(
+            pst_path, bronze_path, max_emails=max_emails,
+            classify_sensitivity=classify_sensitivity,
+            sensitivity_rules_path=sensitivity_rules_path,
+        )
         all_stats["bronze_stats"]["pst"] = pst_stats
 
         # Step 1.5: Classify all attachments (extract text, classify, move, enrich)
@@ -487,6 +502,18 @@ Examples:
         help="Remove legacy duplicate storage (32-char dirs, old cache)"
     )
 
+    # Sensitivity classification
+    parser.add_argument(
+        "--no-sensitivity",
+        action="store_true",
+        help="Skip email sensitivity classification in Bronze layer"
+    )
+    parser.add_argument(
+        "--sensitivity-rules",
+        type=str,
+        help="Path to custom sensitivity_rules.yaml"
+    )
+
     # Limit
     parser.add_argument(
         "--limit",
@@ -556,7 +583,9 @@ Examples:
                 output_path=args.output,
                 ground_truth_path=args.evaluate,
                 chunk_size=args.chunk_size,
-                max_emails=args.limit
+                max_emails=args.limit,
+                classify_sensitivity=not args.no_sensitivity,
+                sensitivity_rules_path=args.sensitivity_rules,
             )
 
         print("\n" + "=" * 60)
