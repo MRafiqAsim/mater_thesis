@@ -95,7 +95,8 @@ class ReActRetriever:
         self,
         gold_path: str,
         silver_path: Optional[str] = None,
-        config: Optional[ReActConfig] = None
+        config: Optional[ReActConfig] = None,
+        mode: str = "local",
     ):
         """
         Initialize the ReAct retriever.
@@ -104,13 +105,14 @@ class ReActRetriever:
             gold_path: Path to Gold layer with indexes
             silver_path: Path to Silver layer with chunks
             config: Agent configuration
+            mode: Processing mode — "local" uses local embeddings
         """
         self.gold_path = Path(gold_path)
         self.silver_path = Path(silver_path) if silver_path else None
         self.config = config or ReActConfig()
 
         # Initialize toolkit
-        self.toolkit = RetrievalToolkit(str(gold_path), str(silver_path) if silver_path else None)
+        self.toolkit = RetrievalToolkit(str(gold_path), str(silver_path) if silver_path else None, mode=mode)
 
         # Initialize LLM client
         self.client = None
@@ -384,6 +386,22 @@ class ReActRetriever:
             return result_text
 
         elif isinstance(data, dict):
+            # For global_search / local_search, the answer is the primary output
+            if "answer" in data and tool_result.tool_name in ("global_search", "local_search"):
+                answer = data["answer"]
+                meta_parts = []
+                for k, v in data.items():
+                    if k == "answer":
+                        continue
+                    if isinstance(v, list):
+                        meta_parts.append(f"{k}: [{len(v)} items]")
+                    elif isinstance(v, str) and len(v) > 100:
+                        meta_parts.append(f"{k}: {v[:100]}...")
+                    else:
+                        meta_parts.append(f"{k}: {v}")
+                meta = " | ".join(meta_parts)
+                return f"Answer: {answer}\n\nMetadata: {meta}" if meta else f"Answer: {answer}"
+
             # Format single result
             parts = []
             for key, value in list(data.items())[:10]:
@@ -428,6 +446,10 @@ class ReActRetriever:
                 sources.append({'chunk_id': data['chunk_id'], 'type': 'chunk'})
             if 'source_chunks' in data:
                 for chunk_id in data['source_chunks'][:5]:
+                    sources.append({'chunk_id': chunk_id, 'type': 'chunk'})
+            # global_search / local_search return source_chunk_ids
+            if 'source_chunk_ids' in data:
+                for chunk_id in data['source_chunk_ids'][:20]:
                     sources.append({'chunk_id': chunk_id, 'type': 'chunk'})
 
         return sources

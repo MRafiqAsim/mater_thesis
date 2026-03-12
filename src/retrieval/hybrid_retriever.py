@@ -116,7 +116,7 @@ class HybridRetriever:
         self.toolkit = RetrievalToolkit(str(gold_path), str(silver_path) if silver_path else None, mode=mode)
 
         # Initialize ReAct retriever
-        self.react_retriever = ReActRetriever(str(gold_path), str(silver_path) if silver_path else None)
+        self.react_retriever = ReActRetriever(str(gold_path), str(silver_path) if silver_path else None, mode=mode)
 
         # LLM client for answer generation (always try — even local mode uses LLM for answers)
         self.llm_client = None
@@ -289,7 +289,7 @@ class HybridRetriever:
         }
 
         # Check for listing/aggregate intent
-        if not re.search(r"(list|all|every|what are|provide|show|give me|how many|which)", query_lower):
+        if not re.search(r"(list|all|every|what\b.*\b(are|names|types)|provide|show|give me|how many|which|discussed|mentioned)", query_lower):
             return None
 
         for pattern, entity_types in type_patterns.items():
@@ -299,111 +299,68 @@ class HybridRetriever:
         return None
 
     def _graphrag_retrieve(self, query: str) -> RetrievalResult:
-        """GraphRAG: Community-based retrieval with entity listing for aggregate queries."""
-        # Check for aggregate/listing queries
-        aggregate_type = self._detect_aggregate_type(query)
-        extra_context = ""
+        """GraphRAG retrieval using Global Search (map-reduce) or Local Search."""
+        import time
+        start = time.time()
 
-        if aggregate_type:
-            # List entities for each type (primary + fallbacks)
-            for etype in aggregate_type:
-                entity_list_result = self.toolkit.list_entities(etype)
-                if entity_list_result.success and entity_list_result.data:
-                    entity_names = [e["name"] for e in entity_list_result.data]
-                    extra_context += (
-                        f"{etype} entities in the knowledge graph "
-                        f"({len(entity_names)} total):\n"
-                        + "\n".join(f"- {name}" for name in entity_names)
-                        + "\n\n"
-                    )
+        if not self.llm_client:
+            logger.warning("GraphRAG requires LLM — falling back to vector search")
+            return self._vector_retrieve(query)
 
-            # Also include thread subjects as work items / projects
-            if self.silver_path:
-                thread_subjects = self._get_all_thread_subjects()
-                if thread_subjects:
-                    extra_context += (
-                        f"All email thread subjects (work items/topics discussed, "
-                        f"{len(thread_subjects)} total):\n"
-                        + "\n".join(f"- {s}" for s in sorted(thread_subjects))
-                        + "\n\n"
-                    )
+        # Route: global (aggregate/broad) vs local (specific entity)
+        search_type = self.toolkit.route_graphrag_query(query)
+        model = self.config.answer_model
 
-        # Search communities
-        community_result = self.toolkit.graphrag_search(query, level=0, top_k=3)
-
-        if not community_result.success or not community_result.data:
-            if not extra_context:
-                return self._vector_retrieve(query)
-
-        # Collect chunks from community source_chunk_ids (or fallback to entity lookup)
-        chunks = []
-        community_summaries = []
-
-        if community_result.success and community_result.data:
-            for community in community_result.data:
-                community_summaries.append(community.get("summary", ""))
-
-                # Prefer direct source_chunk_ids from community
-                source_chunks = community.get("source_chunk_ids", [])
-                if source_chunks:
-                    for chunk_id in source_chunks[:10]:
-                        chunk_result = self.toolkit.get_chunk_context(chunk_id)
-                        if chunk_result.success and chunk_result.data:
-                            chunks.append(chunk_result.data)
-                else:
-                    # Fallback: get chunks via entity lookup (for old community files)
-                    for entity in community.get("key_entities", [])[:3]:
-                        entity_result = self.toolkit.entity_lookup(entity.get("name", ""))
-                        if entity_result.success and entity_result.data:
-                            for chunk_id in entity_result.data.get("source_chunks", [])[:3]:
-                                chunk_result = self.toolkit.get_chunk_context(chunk_id)
-                                if chunk_result.success and chunk_result.data:
-                                    chunks.append(chunk_result.data)
-
-        # If no chunks from communities, run vector search for evidence
-        if not chunks and extra_context:
-            vector_result = self.toolkit.vector_search(query, top_k=self.config.top_k_per_strategy)
-            if vector_result.success and vector_result.data:
-                chunks = vector_result.data
-
-        # Deduplicate chunks
-        seen_ids = set()
-        unique_chunks = []
-        for chunk in chunks:
-            chunk_id = chunk.get("chunk_id")
-            if chunk_id and chunk_id not in seen_ids:
-                seen_ids.add(chunk_id)
-                unique_chunks.append(chunk)
-
-        chunks = unique_chunks[:self.config.top_k_per_strategy]
-
-        # Generate answer with community context + entity listing
-        answer = ""
-        is_grounded = True
-        missing_info = None
-        if self.config.use_llm_answer:
-            community_context = extra_context + "\n\n".join([
-                f"Community Context: {s}" for s in community_summaries
-            ])
-            answer, is_grounded, missing_info = self._generate_answer(
+        if search_type == "global":
+            result = self.toolkit.global_search(
                 query,
-                chunks[:self.config.max_context_chunks],
-                extra_context=community_context
+                llm_client=self.llm_client,
+                model=model,
+                level=0,
             )
+        else:
+            result = self.toolkit.local_search(
+                query,
+                llm_client=self.llm_client,
+                model=model,
+            )
+
+        if not result.success:
+            logger.warning(f"GraphRAG {search_type} search failed: {result.message}")
+            return self._vector_retrieve(query)
+
+        # Load source chunks for citation
+        answer = result.data.get("answer", "")
+        source_chunk_ids = result.data.get("source_chunk_ids", [])
+
+        chunks = []
+        for chunk_id in source_chunk_ids[:self.config.top_k_per_strategy]:
+            chunk_result = self.toolkit.get_chunk_context(chunk_id)
+            if chunk_result.success and chunk_result.data:
+                chunks.append(chunk_result.data)
+
+        # Check grounding
+        is_grounded, missing_info = self._check_grounding(answer)
+
+        execution_time = time.time() - start
 
         return RetrievalResult(
             query=query,
             answer=answer,
             chunks=chunks,
-            strategy="graphrag",
-            confidence=self._calculate_confidence(chunks),
+            strategy=f"graphrag_{search_type}",
+            confidence=self._calculate_confidence(chunks) if chunks else 0.5,
             sources=[c.get("chunk_id", "") for c in chunks],
             metadata={
-                "communities_found": len(community_result.data),
-                "community_summaries": community_summaries
+                "search_type": search_type,
+                "communities_used": result.data.get("source_communities", []),
+                "points_count": len(result.data.get("points", [])),
+                "entity_count": result.data.get("entity_count", 0),
+                "tool_message": result.message,
             },
             is_grounded=is_grounded,
             missing_info=missing_info,
+            execution_time=execution_time,
         )
 
     def _hybrid_retrieve(self, query: str) -> RetrievalResult:
@@ -933,6 +890,21 @@ class HybridRetriever:
                 break
 
         return answer, is_grounded, missing_info
+
+    def _check_grounding(self, answer: str) -> Tuple[bool, Optional[str]]:
+        """Check if an answer indicates missing information."""
+        from prompt_loader import get_prompt
+        missing_indicators = get_prompt("retrieval", "generation", "missing_indicators", [
+            "don't have enough information",
+            "not in the context",
+            "cannot find",
+            "no information",
+            "not mentioned",
+        ])
+        for indicator in missing_indicators:
+            if indicator.lower() in answer.lower():
+                return False, "Required information not found in knowledge base"
+        return True, None
 
     def _generate_local_answer(
         self,

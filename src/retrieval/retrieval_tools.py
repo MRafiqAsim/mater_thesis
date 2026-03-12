@@ -7,6 +7,7 @@ Each tool wraps a specific retrieval strategy (PathRAG, GraphRAG, Vector, etc.)
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass, field
@@ -109,6 +110,8 @@ class RetrievalToolkit:
         self._chunk_ids = None
         self._entity_embeddings = None
         self._entity_ids = None
+        self._llm_client = None
+        self._llm_model = None
 
         # Register tools
         self.tools: Dict[str, Tool] = {}
@@ -140,11 +143,11 @@ class RetrievalToolkit:
             function=self.pathrag_search
         )
 
-        # GraphRAG Search
+        # GraphRAG Community Search (keyword-based, fast, no LLM)
         self.tools["graphrag_search"] = Tool(
             name="graphrag_search",
-            description="Search for relevant community summaries and their source chunks. "
-                       "Use this for broad topic queries or when you need context about a domain.",
+            description="Quick keyword search over community summaries. Fast but shallow. "
+                       "Prefer global_search or local_search for better results.",
             parameters={
                 "query": {
                     "type": "string",
@@ -163,6 +166,47 @@ class RetrievalToolkit:
                 }
             },
             function=self.graphrag_search
+        )
+
+        # GraphRAG Global Search (map-reduce over all communities, uses LLM)
+        self.tools["global_search"] = Tool(
+            name="global_search",
+            description="GraphRAG Global Search: map-reduce over ALL community summaries using LLM. "
+                       "Best for aggregate/broad questions like 'what projects are discussed?', "
+                       "'list all topics', 'summarize the main themes', 'what teams are involved?'. "
+                       "This scans the entire knowledge graph — use it when no single entity or chunk "
+                       "can answer the question. Returns a synthesized answer with scored key points.",
+            parameters={
+                "query": {
+                    "type": "string",
+                    "description": "The broad/aggregate search query",
+                    "required": True
+                },
+                "level": {
+                    "type": "integer",
+                    "description": "Community hierarchy level (0=fine, higher=coarse). Default: 0",
+                    "required": False
+                }
+            },
+            function=self._global_search_tool
+        )
+
+        # GraphRAG Local Search (entity-centric context building, uses LLM)
+        self.tools["local_search"] = Tool(
+            name="local_search",
+            description="GraphRAG Local Search: find entities related to query via embeddings, "
+                       "then expand to connected relationships, community reports, and source text. "
+                       "Best for entity-specific questions like 'what did PERSON_001 work on?', "
+                       "'what issues were reported about JIRA?', 'tell me about LoanDepot'. "
+                       "Returns a detailed answer grounded in entity context.",
+            parameters={
+                "query": {
+                    "type": "string",
+                    "description": "The entity-specific search query",
+                    "required": True
+                }
+            },
+            function=self._local_search_tool
         )
 
         # Vector Search
@@ -287,6 +331,44 @@ class RetrievalToolkit:
             },
             function=self.get_attachment_content
         )
+
+    def _get_llm_client(self):
+        """Lazy-initialize LLM client for global/local search tools."""
+        if self._llm_client is None:
+            import httpx
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+            if azure_endpoint and azure_key:
+                from openai import AzureOpenAI
+                self._llm_client = AzureOpenAI(
+                    azure_endpoint=azure_endpoint,
+                    api_key=azure_key,
+                    api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+                    timeout=httpx.Timeout(120.0, connect=10.0),
+                    max_retries=2,
+                )
+                self._llm_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+        return self._llm_client, self._llm_model
+
+    def _global_search_tool(self, query: str, level: int = 0) -> ToolResult:
+        """Wrapper for global_search that auto-provides LLM client."""
+        client, model = self._get_llm_client()
+        if not client:
+            return ToolResult(
+                tool_name="global_search", success=False, data={},
+                message="LLM client not available"
+            )
+        return self.global_search(query, llm_client=client, model=model, level=level)
+
+    def _local_search_tool(self, query: str) -> ToolResult:
+        """Wrapper for local_search that auto-provides LLM client."""
+        client, model = self._get_llm_client()
+        if not client:
+            return ToolResult(
+                tool_name="local_search", success=False, data={},
+                message="LLM client not available"
+            )
+        return self.local_search(query, llm_client=client, model=model)
 
     def _load_graph(self):
         """Lazy load the knowledge graph."""
@@ -445,7 +527,7 @@ class RetrievalToolkit:
             # Initialize PathRAG retriever
             config = PathRAGConfig(
                 max_hops=3,
-                flow_threshold=0.3,
+                flow_threshold=0.05,  # Low threshold — don't prune sparse paths
                 flow_alpha=0.8,
                 top_k_paths=max_paths
             )
@@ -993,6 +1075,409 @@ class RetrievalToolkit:
                 data=None,
                 message=str(e)
             )
+
+    def route_graphrag_query(self, query: str) -> str:
+        """Route query to global or local search based on query type."""
+        import re
+        query_lower = query.lower()
+
+        # Global indicators: aggregate, summary, overview questions
+        global_patterns = [
+            r"(what|list|all|every|which)\b.*\b(topics?|themes?|projects?|discussed|mentioned|about|names?|types?)",
+            r"(summarize|overview|main|key)\b.*\b(topics?|themes?|activities|discussions)",
+            r"how many\b",
+            r"(most common|frequently|overall|general|across|throughout)",
+        ]
+
+        # Local indicators: specific entity or relationship questions
+        local_patterns = [
+            r"(who|what did|tell me about|details?|describe)\b",
+            r"(relationship|connection|between|involved in|work on|responsible)",
+            r"(when did|where|how did)\b",
+        ]
+
+        global_score = sum(1 for p in global_patterns if re.search(p, query_lower))
+        local_score = sum(1 for p in local_patterns if re.search(p, query_lower))
+
+        route = "global" if global_score >= local_score else "local"
+        logger.info(f"GraphRAG query route: {route} (global={global_score}, local={local_score})")
+        return route
+
+    def global_search(
+        self,
+        query: str,
+        llm_client,
+        model: str = "gpt-4o",
+        level: int = 0,
+        max_chunks_per_community: int = 3,
+    ) -> ToolResult:
+        """
+        GraphRAG Global Search — map-reduce over community summaries.
+
+        Map phase: each community summary → LLM → rated key points.
+        Reduce phase: top points → LLM → final synthesized answer.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from prompt_loader import get_prompt
+        start_time = datetime.now()
+
+        try:
+            # Load all communities at the chosen level
+            communities_path = self.gold_path / "communities" / f"level_{level}"
+            if not communities_path.exists():
+                return ToolResult(
+                    tool_name="global_search",
+                    success=False,
+                    data={},
+                    message=f"Community level {level} not found"
+                )
+
+            communities = []
+            for comm_file in sorted(communities_path.glob("*.json")):
+                with open(comm_file, 'r', encoding='utf-8') as f:
+                    communities.append(json.load(f))
+
+            if not communities:
+                return ToolResult(
+                    tool_name="global_search",
+                    success=False,
+                    data={},
+                    message="No communities found"
+                )
+
+            logger.info(f"Global search: {len(communities)} communities at level {level}")
+
+            # MAP PHASE: process each community
+            def map_community(comm):
+                """Send community context to LLM, get rated points."""
+                summary = comm.get("summary", "")
+                entities_text = ", ".join(
+                    e["name"] for e in comm.get("key_entities", [])[:15]
+                )
+
+                # Load sample source chunks for richer context
+                source_chunks = comm.get("source_chunk_ids", [])
+                source_text_parts = []
+                for cid in source_chunks[:max_chunks_per_community]:
+                    chunk_data = self._load_chunk(cid)
+                    if chunk_data:
+                        text = chunk_data.get("text_anonymized", "")[:300]
+                        if text:
+                            source_text_parts.append(text)
+
+                source_text = "\n---\n".join(source_text_parts) if source_text_parts else "(no source text available)"
+
+                try:
+                    response = llm_client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": get_prompt("retrieval", "graphrag_global_map", "system_prompt",
+                                    "Extract key points relevant to the query. Return JSON array of {point, score} objects.")
+                            },
+                            {
+                                "role": "user",
+                                "content": get_prompt("retrieval", "graphrag_global_map", "user_prompt",
+                                    "Query: {query}\nContext: {community_context}")
+                                    .replace("{query}", query)
+                                    .replace("{community_context}", summary)
+                                    .replace("{entities}", entities_text)
+                                    .replace("{source_text}", source_text)
+                            }
+                        ],
+                        temperature=get_prompt("retrieval", "graphrag_global_map", "temperature", 0.0),
+                        max_tokens=get_prompt("retrieval", "graphrag_global_map", "max_tokens", 500),
+                    )
+
+                    content = response.choices[0].message.content.strip()
+                    # Parse JSON array from response
+                    if content.startswith("```"):
+                        content = content.split("```")[1]
+                        if content.startswith("json"):
+                            content = content[4:]
+                    points = json.loads(content)
+                    if not isinstance(points, list):
+                        points = []
+
+                    # Attach community metadata
+                    for p in points:
+                        p["community_id"] = comm.get("community_id", "")
+                        p["source_chunk_ids"] = source_chunks[:5]
+
+                    return points
+
+                except Exception as e:
+                    logger.warning(f"Map failed for community {comm.get('community_id')}: {e}")
+                    return []
+
+            # Run map phase with thread pool (5 concurrent LLM calls)
+            all_points = []
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(map_community, c): c for c in communities}
+                for future in as_completed(futures):
+                    points = future.result()
+                    all_points.extend(points)
+
+            logger.info(f"Map phase: {len(all_points)} points from {len(communities)} communities")
+
+            if not all_points:
+                return ToolResult(
+                    tool_name="global_search",
+                    success=True,
+                    data={"answer": "No relevant information found across communities.", "points": [], "source_chunk_ids": []},
+                    message="No relevant points found"
+                )
+
+            # Filter and sort points by score
+            all_points = [p for p in all_points if p.get("score", 0) >= 30]
+            all_points.sort(key=lambda x: x.get("score", 0), reverse=True)
+            top_points = all_points[:40]
+
+            # Collect source chunk IDs from top-scoring communities
+            source_chunk_ids = []
+            source_communities = set()
+            for p in top_points:
+                source_communities.add(p.get("community_id", ""))
+                source_chunk_ids.extend(p.get("source_chunk_ids", []))
+            source_chunk_ids = list(dict.fromkeys(source_chunk_ids))[:20]  # deduplicate, cap at 20
+
+            # REDUCE PHASE: synthesize final answer
+            points_text = "\n".join(
+                f"- [{p.get('score', 0)}] {p.get('point', '')}" for p in top_points
+            )
+
+            reduce_response = llm_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": get_prompt("retrieval", "graphrag_global_reduce", "system_prompt",
+                            "Synthesize the key points into a comprehensive answer.")
+                    },
+                    {
+                        "role": "user",
+                        "content": get_prompt("retrieval", "graphrag_global_reduce", "user_prompt",
+                            "Query: {query}\nPoints: {points}")
+                            .replace("{query}", query)
+                            .replace("{points}", points_text)
+                    }
+                ],
+                temperature=get_prompt("retrieval", "graphrag_global_reduce", "temperature", 0.3),
+                max_tokens=get_prompt("retrieval", "graphrag_global_reduce", "max_tokens", 1500),
+            )
+
+            answer = reduce_response.choices[0].message.content.strip()
+            execution_time = (datetime.now() - start_time).total_seconds()
+
+            return ToolResult(
+                tool_name="global_search",
+                success=True,
+                data={
+                    "answer": answer,
+                    "points": [{"point": p["point"], "score": p["score"]} for p in top_points[:10]],
+                    "source_chunk_ids": source_chunk_ids,
+                    "source_communities": list(source_communities),
+                },
+                message=f"Global search: {len(top_points)} points from {len(source_communities)} communities",
+                execution_time=execution_time,
+            )
+
+        except Exception as e:
+            logger.error(f"Global search failed: {e}")
+            return ToolResult(
+                tool_name="global_search",
+                success=False,
+                data={},
+                message=str(e)
+            )
+
+    def local_search(
+        self,
+        query: str,
+        llm_client,
+        model: str = "gpt-4o",
+        top_entities: int = 10,
+        max_relationships: int = 20,
+    ) -> ToolResult:
+        """
+        GraphRAG Local Search — entity-centric context building.
+
+        1. Find entities semantically related to query (via entity embeddings)
+        2. Expand: connected entities, relationships, community reports, source chunks
+        3. Build context and generate answer via LLM
+        """
+        from prompt_loader import get_prompt
+        start_time = datetime.now()
+
+        try:
+            graph = self._load_graph()
+
+            # Step 1: Find seed entities via embedding similarity
+            keywords = query.split()  # Simple tokenization
+            entity_names = self.node_retrieval(keywords, top_n=top_entities)
+
+            if not entity_names:
+                return ToolResult(
+                    tool_name="local_search",
+                    success=False,
+                    data={},
+                    message="No matching entities found"
+                )
+
+            # Convert entity names → graph node IDs
+            # node_retrieval returns names, but graph uses hash-based IDs
+            name_to_id = {v: k for k, v in self._entity_id_to_name.items()}
+            entity_ids = []
+            for name in entity_names:
+                nid = name_to_id.get(name)
+                if nid:
+                    entity_ids.append(nid)
+                else:
+                    # Try graph lookup by iterating nodes (fallback)
+                    for gid, node in graph.nodes.items():
+                        if node.name == name:
+                            entity_ids.append(gid)
+                            break
+
+            if not entity_ids:
+                return ToolResult(
+                    tool_name="local_search",
+                    success=False,
+                    data={},
+                    message=f"Found {len(entity_names)} entities by name but none matched graph node IDs"
+                )
+
+            logger.info(f"Local search: {len(entity_ids)} seed entities (from {len(entity_names)} name matches)")
+
+            # Step 2: Build context from entities
+            entities_text_parts = []
+            relationships_text_parts = []
+            source_chunk_ids = set()
+
+            for node_id in entity_ids:
+                node = graph.get_node(node_id)
+                if not node:
+                    continue
+
+                # Entity details
+                desc = node.properties.get("description", "")[:100] if node.properties else ""
+                entities_text_parts.append(
+                    f"- {node.name} ({node.node_type}){': ' + desc if desc else ''}"
+                )
+                source_chunk_ids.update(node.source_chunks[:3])
+
+                # Connected relationships
+                rel_count = 0
+                for edge_id, edge in graph.edges.items():
+                    if rel_count >= max_relationships:
+                        break
+                    if edge.source_id == node_id or edge.target_id == node_id:
+                        other_id = edge.target_id if edge.source_id == node_id else edge.source_id
+                        other_node = graph.get_node(other_id)
+                        other_name = other_node.name if other_node else other_id
+                        edge_desc = edge.properties.get("description", "") if edge.properties else ""
+                        relationships_text_parts.append(
+                            f"- {node.name} --[{edge.edge_type}]--> {other_name}"
+                            + (f" ({edge_desc})" if edge_desc else "")
+                        )
+                        rel_count += 1
+
+            # Step 3: Load community reports for seed entities
+            community_reports = []
+            entity_to_comm = self._build_entity_to_community_index()
+            seen_comms = set()
+            for node_id in entity_ids:
+                comm_id = entity_to_comm.get(node_id)
+                if comm_id and comm_id not in seen_comms:
+                    seen_comms.add(comm_id)
+                    # Load community summary
+                    for level_dir in sorted(self.gold_path.glob("communities/level_*")):
+                        comm_file = level_dir / f"{comm_id}.json"
+                        if comm_file.exists():
+                            with open(comm_file, 'r', encoding='utf-8') as f:
+                                comm_data = json.load(f)
+                            community_reports.append(comm_data.get("summary", ""))
+                            break
+
+            # Step 4: Load source text from chunks
+            source_text_parts = []
+            for cid in list(source_chunk_ids)[:10]:
+                chunk_data = self._load_chunk(cid)
+                if chunk_data:
+                    text = chunk_data.get("text_anonymized", "")[:400]
+                    if text:
+                        source_text_parts.append(text)
+
+            # Step 5: Build context and call LLM
+            entities_text = "\n".join(entities_text_parts[:20]) or "(none)"
+            relationships_text = "\n".join(relationships_text_parts[:30]) or "(none)"
+            community_text = "\n\n".join(community_reports[:5]) or "(none)"
+            source_text = "\n---\n".join(source_text_parts[:8]) or "(none)"
+
+            response = llm_client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": get_prompt("retrieval", "graphrag_local", "system_prompt",
+                            "Answer using the provided knowledge graph context.")
+                    },
+                    {
+                        "role": "user",
+                        "content": get_prompt("retrieval", "graphrag_local", "user_prompt",
+                            "Query: {query}\nContext: {entities}")
+                            .replace("{query}", query)
+                            .replace("{entities}", entities_text)
+                            .replace("{relationships}", relationships_text)
+                            .replace("{community_reports}", community_text)
+                            .replace("{source_text}", source_text)
+                    }
+                ],
+                temperature=get_prompt("retrieval", "graphrag_local", "temperature", 0.3),
+                max_tokens=get_prompt("retrieval", "graphrag_local", "max_tokens", 1000),
+            )
+
+            answer = response.choices[0].message.content.strip()
+            execution_time = (datetime.now() - start_time).total_seconds()
+
+            return ToolResult(
+                tool_name="local_search",
+                success=True,
+                data={
+                    "answer": answer,
+                    "source_chunk_ids": list(source_chunk_ids)[:20],
+                    "entity_count": len(entity_ids),
+                    "relationship_count": len(relationships_text_parts),
+                    "community_count": len(seen_comms),
+                },
+                message=f"Local search: {len(entity_ids)} entities, {len(relationships_text_parts)} relationships",
+                execution_time=execution_time,
+            )
+
+        except Exception as e:
+            logger.error(f"Local search failed: {e}")
+            return ToolResult(
+                tool_name="local_search",
+                success=False,
+                data={},
+                message=str(e)
+            )
+
+    def _build_entity_to_community_index(self, level: int = 0) -> Dict[str, str]:
+        """Build reverse mapping from node_id to community_id. Cached."""
+        if not hasattr(self, '_entity_to_community'):
+            self._entity_to_community = {}
+            communities_path = self.gold_path / "communities" / f"level_{level}"
+            if communities_path.exists():
+                for comm_file in communities_path.glob("*.json"):
+                    with open(comm_file, 'r', encoding='utf-8') as f:
+                        comm = json.load(f)
+                    comm_id = comm.get("community_id", comm_file.stem)
+                    for node_id in comm.get("node_ids", []):
+                        self._entity_to_community[node_id] = comm_id
+            logger.info(f"Entity-to-community index: {len(self._entity_to_community)} mappings")
+        return self._entity_to_community
 
     def _load_chunk(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         """Load chunk data from Silver layer."""

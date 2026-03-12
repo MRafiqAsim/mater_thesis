@@ -439,18 +439,54 @@ class PathRAGRetriever:
         return path_results
 
     def find_entity_ids_by_name(self, names: List[str]) -> List[str]:
-        """Find entity node IDs by name (bidirectional substring match)."""
+        """
+        Find entity node IDs by name.
+
+        Only matches entity nodes (not CHUNK/THREAD nodes) and builds
+        the entity-only graph so we can prioritize high-degree nodes.
+        """
         graph = self._load_graph()
+        G = self._build_nx_graph()
+
+        SKIP_TYPES = {"CHUNK", "THREAD"}
         entity_ids = []
+        seen = set()
 
         for name in names:
-            name_lower = name.lower()
+            name_lower = name.lower().strip()
+            if not name_lower or name_lower in seen:
+                continue
+            seen.add(name_lower)
+
+            best_id = None
+            best_score = -1
+
             for node_id, node in graph.nodes.items():
-                node_lower = node.name.lower()
-                # Bidirectional: query in node name OR node name in query
-                if name_lower in node_lower or node_lower in name_lower:
-                    entity_ids.append(node_id)
-                    break
+                if node.node_type in SKIP_TYPES:
+                    continue
+                if node_id not in G:
+                    continue
+
+                node_name = node.name.replace("\n", " ").strip().lower()
+
+                # Exact match (best)
+                if node_name == name_lower:
+                    score = 1000 + G.degree(node_id)
+                # Query is substring of node name
+                elif name_lower in node_name:
+                    score = 100 + G.degree(node_id)
+                # Node name is substring of query
+                elif node_name in name_lower:
+                    score = 50 + G.degree(node_id)
+                else:
+                    continue
+
+                if score > best_score:
+                    best_score = score
+                    best_id = node_id
+
+            if best_id and best_id not in entity_ids:
+                entity_ids.append(best_id)
 
         return entity_ids
 
