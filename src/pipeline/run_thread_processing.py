@@ -39,8 +39,8 @@ load_dotenv()
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from anonymization.thread_aware_processor import ThreadAwareProcessor
-from anonymization.identity_registry import IdentityRegistry
+from silver.thread_aware_processor import ThreadAwareProcessor
+from silver.identity_registry import IdentityRegistry
 
 # Configure logging
 logging.basicConfig(
@@ -196,7 +196,8 @@ Examples:
     parser.add_argument(
         "--with-summaries",
         action="store_true",
-        help="Generate LLM-based thread summaries"
+        default=True,
+        help="Generate thread summaries (BART for local, GPT-4o for LLM)"
     )
 
     # Attachment processing arguments
@@ -374,9 +375,11 @@ Examples:
     print(f"Errors:                {stats['errors']}")
 
     print(f"\nOutput:")
-    print(f"  Thread chunks:    {silver_path}/thread_chunks/")
-    print(f"  Single chunks:    {silver_path}/individual_chunks/")
-    print(f"  Thread summaries: {silver_path}/thread_summaries/")
+    print(f"  Technical:        {silver_path}/technical/")
+    print(f"    Thread chunks:    technical/thread_chunks/")
+    print(f"    Email chunks:     technical/email_chunks/")
+    print(f"    Email summaries:  technical/email_summaries/")
+    print(f"    Thread summaries: technical/thread_summaries/")
     print(f"  Non-technical:    {silver_path}/non_technical/")
     print(f"  Processing mode:  {args.mode.upper()}")
     print("=" * 60)

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PathRAGConfig:
     """Configuration for PathRAG retrieval."""
-    max_hops: int = 3  # Maximum path length (1-3 hops)
+    max_hops: int = 2  # Maximum path length (1-2 hops; 3 is too slow on dense graphs)
     flow_threshold: float = 0.3  # Threshold for flow-based pruning
     flow_alpha: float = 0.8  # Alpha parameter for BFS weighted paths
     top_k_entities: int = 10  # Top-k entities from vector search
@@ -71,20 +71,46 @@ class PathRAGRetriever:
     def _load_graph(self):
         """Load knowledge graph."""
         if self._graph is None:
-            from src.graph.graph_builder import GraphBuilder
+            from gold.graph_builder import GraphBuilder
             builder = GraphBuilder("", str(self.gold_path))
             self._graph = builder.load()
             logger.info(f"Loaded graph: {len(self._graph.nodes)} nodes, {len(self._graph.edges)} edges")
         return self._graph
 
     def _build_nx_graph(self) -> nx.Graph:
-        """Build NetworkX graph from knowledge graph."""
+        """
+        Build entity-only NetworkX graph for PathRAG path finding.
+
+        Per the PathRAG paper, the indexing graph contains entity nodes
+        and their relationships — NOT chunk/thread nodes. We also exclude
+        high-fan-out structural edges (MENTIONED_IN, PARTICIPATED_IN,
+        HAS_ATTACHMENT, PART_OF_THREAD) which connect entities to chunks
+        rather than to each other meaningfully.
+        """
         if self._nx_graph is None:
             graph = self._load_graph()
             self._nx_graph = nx.Graph()
 
-            # Add nodes
-            for node_id, node in graph.nodes.items():
+            # Entity-only node types (exclude CHUNK, THREAD)
+            ENTITY_TYPES = {
+                "PERSON", "ORG", "GPE", "PRODUCT", "DOCUMENT",
+                "FAC", "LAW", "CONCEPT", "EVENT", "LOC",
+                "WORK_OF_ART", "NORP",
+            }
+            # Structural edge types that don't represent semantic relationships
+            EXCLUDE_EDGE_TYPES = {
+                "MENTIONED_IN", "PARTICIPATED_IN",
+                "HAS_ATTACHMENT", "PART_OF_THREAD",
+            }
+
+            entity_ids = {
+                nid for nid, node in graph.nodes.items()
+                if node.node_type in ENTITY_TYPES
+            }
+
+            # Add entity nodes only
+            for node_id in entity_ids:
+                node = graph.nodes[node_id]
                 self._nx_graph.add_node(
                     node_id,
                     name=node.name,
@@ -92,18 +118,25 @@ class PathRAGRetriever:
                     source_chunks=node.source_chunks
                 )
 
-            # Add edges
+            # Add entity-to-entity edges only
             for edge_id, edge in graph.edges.items():
-                self._nx_graph.add_edge(
-                    edge.source_id,
-                    edge.target_id,
-                    edge_type=edge.edge_type,
-                    weight=edge.weight,
-                    description=edge.properties.get("description", ""),
-                    keywords=edge.properties.get("keywords", "")
-                )
+                if edge.edge_type in EXCLUDE_EDGE_TYPES:
+                    continue
+                if edge.source_id in entity_ids and edge.target_id in entity_ids:
+                    self._nx_graph.add_edge(
+                        edge.source_id,
+                        edge.target_id,
+                        edge_type=edge.edge_type,
+                        weight=edge.weight,
+                        description=edge.properties.get("description", ""),
+                        keywords=edge.properties.get("keywords", "")
+                    )
 
-            logger.info(f"Built NetworkX graph: {self._nx_graph.number_of_nodes()} nodes, {self._nx_graph.number_of_edges()} edges")
+            logger.info(
+                f"Built entity-only PathRAG graph: "
+                f"{self._nx_graph.number_of_nodes()} nodes, "
+                f"{self._nx_graph.number_of_edges()} edges"
+            )
 
         return self._nx_graph
 
@@ -113,6 +146,12 @@ class PathRAGRetriever:
     ) -> Tuple[Dict, Dict, List, List, List]:
         """
         Find paths between entities using DFS (PathRAG algorithm).
+
+        Optimizations vs naive DFS:
+        - Fan-out limit per node (max_neighbors) to prevent explosion on hub nodes
+        - Neighbors sorted by edge weight (highest-weight = most relevant first)
+        - Max paths per pair cap to stop early
+        - Entity-only graph (no CHUNK/THREAD nodes)
 
         Args:
             source_entities: List of entity node IDs
@@ -128,14 +167,31 @@ class PathRAGRetriever:
         two_hop_paths = []
         three_hop_paths = []
 
-        def dfs(current: str, target: str, path: List[str], depth: int):
-            """DFS to find paths up to max_hops."""
+        MAX_NEIGHBORS = 15  # Fan-out limit per node (prevents hub explosion)
+        MAX_PATHS_PER_PAIR = 5   # Stop DFS early once enough paths found
+
+        # Pre-compute sorted neighbor lists (by edge weight, descending)
+        _neighbor_cache: Dict[str, List[str]] = {}
+
+        def _get_neighbors(node_id: str) -> List[str]:
+            if node_id not in _neighbor_cache:
+                neighbors = list(G.neighbors(node_id))
+                # Sort by edge weight descending (most important connections first)
+                neighbors.sort(
+                    key=lambda n: G.edges[node_id, n].get("weight", 0.5),
+                    reverse=True,
+                )
+                _neighbor_cache[node_id] = neighbors[:MAX_NEIGHBORS]
+            return _neighbor_cache[node_id]
+
+        def dfs(current: str, target: str, path: List[str], depth: int, pair_key):
+            """DFS to find paths up to max_hops with fan-out limiting."""
             if depth > self.config.max_hops:
                 return
             if current == target:
-                result[(path[0], target)]["paths"].append(list(path))
+                result[pair_key]["paths"].append(list(path))
                 for u, v in zip(path[:-1], path[1:]):
-                    result[(path[0], target)]["edges"].add(tuple(sorted((u, v))))
+                    result[pair_key]["edges"].add(tuple(sorted((u, v))))
                 if depth == 1:
                     path_stats["1-hop"] += 1
                     one_hop_paths.append(list(path))
@@ -150,20 +206,30 @@ class PathRAGRetriever:
             if current not in G:
                 return
 
-            for neighbor in G.neighbors(current):
-                if neighbor not in path:
-                    dfs(neighbor, target, path + [neighbor], depth + 1)
+            # Early stopping: enough paths for this pair
+            if len(result[pair_key]["paths"]) >= MAX_PATHS_PER_PAIR:
+                return
+
+            path_set = set(path)  # O(1) membership check
+            for neighbor in _get_neighbors(current):
+                if neighbor not in path_set:
+                    dfs(neighbor, target, path + [neighbor], depth + 1, pair_key)
+                    # Re-check after recursion
+                    if len(result[pair_key]["paths"]) >= MAX_PATHS_PER_PAIR:
+                        return
 
         # Find paths between all entity pairs
         for node1 in source_entities:
             for node2 in source_entities:
                 if node1 != node2:
-                    dfs(node1, node2, [node1], 0)
+                    pair_key = (node1, node2)
+                    dfs(node1, node2, [node1], 0, pair_key)
 
         # Convert edges to lists
         for key in result:
             result[key]["edges"] = list(result[key]["edges"])
 
+        logger.info(f"DFS paths: {path_stats}")
         return dict(result), path_stats, one_hop_paths, two_hop_paths, three_hop_paths
 
     def bfs_weighted_paths(

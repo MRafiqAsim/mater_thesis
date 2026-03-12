@@ -85,7 +85,8 @@ class RetrievalToolkit:
     def __init__(
         self,
         gold_path: str,
-        silver_path: Optional[str] = None
+        silver_path: Optional[str] = None,
+        mode: str = "llm",
     ):
         """
         Initialize the retrieval toolkit.
@@ -93,9 +94,11 @@ class RetrievalToolkit:
         Args:
             gold_path: Path to Gold layer with graph and indexes
             silver_path: Path to Silver layer with chunks (optional)
+            mode: Processing mode — "local" uses local models
         """
         self.gold_path = Path(gold_path)
         self.silver_path = Path(silver_path) if silver_path else None
+        self.mode = mode
 
         # Lazy-loaded components
         self._graph = None
@@ -104,6 +107,8 @@ class RetrievalToolkit:
         self._embedding_generator = None
         self._chunk_embeddings = None
         self._chunk_ids = None
+        self._entity_embeddings = None
+        self._entity_ids = None
 
         # Register tools
         self.tools: Dict[str, Tool] = {}
@@ -286,7 +291,7 @@ class RetrievalToolkit:
     def _load_graph(self):
         """Lazy load the knowledge graph."""
         if self._graph is None:
-            from src.graph.graph_builder import GraphBuilder
+            from gold.graph_builder import GraphBuilder
             builder = GraphBuilder("", str(self.gold_path))
             self._graph = builder.load()
         return self._graph
@@ -294,7 +299,7 @@ class RetrievalToolkit:
     def _load_path_indexer(self):
         """Lazy load the path indexer."""
         if self._path_indexer is None:
-            from src.graph.path_indexer import PathIndexer
+            from gold.path_indexer import PathIndexer
             self._path_indexer = PathIndexer(self._load_graph(), str(self.gold_path))
             try:
                 self._path_indexer.load()
@@ -307,8 +312,9 @@ class RetrievalToolkit:
     def _load_embeddings(self):
         """Lazy load chunk embeddings."""
         if self._chunk_embeddings is None:
-            from src.graph.embedding_generator import EmbeddingGenerator
-            generator = EmbeddingGenerator(str(self.gold_path))
+            from gold.embedding_generator import EmbeddingGenerator
+            generator = EmbeddingGenerator(str(self.gold_path), mode=self.mode)
+            self._embedding_generator = generator
             try:
                 self._chunk_ids, self._chunk_embeddings = generator.load_embeddings("chunks")
             except FileNotFoundError:
@@ -316,6 +322,106 @@ class RetrievalToolkit:
                 self._chunk_ids = []
                 self._chunk_embeddings = None
         return self._chunk_ids, self._chunk_embeddings
+
+    def _load_entity_embeddings(self):
+        """Lazy load entity embeddings and ID-to-name mapping."""
+        if self._entity_embeddings is None:
+            from gold.embedding_generator import EmbeddingGenerator
+            generator = EmbeddingGenerator(str(self.gold_path), mode=self.mode)
+            try:
+                self._entity_ids, self._entity_embeddings = generator.load_embeddings("entities")
+                # Build ID → name mapping from graph nodes
+                self._entity_id_to_name = {}
+                nodes_file = self.gold_path / "knowledge_graph" / "nodes.json"
+                if nodes_file.exists():
+                    with open(nodes_file, 'r', encoding='utf-8') as f:
+                        nodes = json.load(f)
+                    for node_id, node_data in nodes.items():
+                        self._entity_id_to_name[node_id] = node_data.get("name", node_id)
+                logger.info(f"Loaded {len(self._entity_ids)} entity embeddings for node retrieval")
+            except FileNotFoundError:
+                logger.warning("Entity embeddings not found — falling back to string matching")
+                self._entity_ids = []
+                self._entity_embeddings = None
+                self._entity_id_to_name = {}
+        return self._entity_ids, self._entity_embeddings
+
+    def node_retrieval(self, keywords: List[str], top_n: int = 10) -> List[str]:
+        """
+        PathRAG Node Retrieval: dense vector matching of keywords against entity embeddings.
+
+        Per the PathRAG paper (Stage 1):
+        1. Encode keywords using the same embedding model
+        2. Cosine similarity against pre-computed entity embeddings
+        3. Return top-N entity names
+
+        Args:
+            keywords: Extracted keywords from query
+            top_n: Maximum number of entities to return
+
+        Returns:
+            List of entity names (graph node names)
+        """
+        entity_ids, entity_embeddings = self._load_entity_embeddings()
+        if entity_embeddings is None or len(entity_ids) == 0:
+            return []
+
+        try:
+            import numpy as np
+
+            # Get or create embedding generator for query encoding
+            if self._embedding_generator is None:
+                from gold.embedding_generator import EmbeddingGenerator
+                self._embedding_generator = EmbeddingGenerator(str(self.gold_path), mode=self.mode)
+
+            generator = self._embedding_generator
+
+            # Embed all keywords in a batch
+            keyword_embeddings = generator.embed_batch(keywords)
+            valid_embeddings = [e for e in keyword_embeddings if e is not None]
+            if not valid_embeddings:
+                return []
+
+            keyword_matrix = np.array(valid_embeddings)
+
+            # Normalize for cosine similarity
+            keyword_norms = np.linalg.norm(keyword_matrix, axis=1, keepdims=True)
+            keyword_norms[keyword_norms == 0] = 1
+            keyword_matrix_norm = keyword_matrix / keyword_norms
+
+            entity_norms = np.linalg.norm(entity_embeddings, axis=1, keepdims=True)
+            entity_norms[entity_norms == 0] = 1
+            entity_matrix_norm = entity_embeddings / entity_norms
+
+            # Compute similarity: each keyword against all entities
+            # Shape: (num_keywords, num_entities)
+            similarity_matrix = keyword_matrix_norm @ entity_matrix_norm.T
+
+            # For each entity, take the max similarity across all keywords
+            max_similarities = similarity_matrix.max(axis=0)
+
+            # Get top-N entity indices
+            top_indices = np.argsort(max_similarities)[::-1][:top_n]
+
+            # Map back to entity names
+            matched_names = []
+            for idx in top_indices:
+                if max_similarities[idx] < 0.3:  # Minimum similarity threshold
+                    break
+                entity_id = entity_ids[idx]
+                name = self._entity_id_to_name.get(entity_id, entity_id)
+                if name not in matched_names:
+                    matched_names.append(name)
+
+            logger.info(
+                f"Node retrieval: {len(keywords)} keywords → {len(matched_names)} entities "
+                f"(top score: {max_similarities[top_indices[0]]:.3f})"
+            )
+            return matched_names
+
+        except Exception as e:
+            logger.error(f"Node retrieval failed: {e}")
+            return []
 
     def pathrag_search(
         self,
@@ -409,8 +515,6 @@ class RetrievalToolkit:
         start_time = datetime.now()
 
         try:
-            from src.graph.embedding_generator import EmbeddingGenerator
-
             # Load community summaries
             communities_path = self.gold_path / "communities" / f"level_{level}"
 
@@ -503,10 +607,8 @@ class RetrievalToolkit:
         start_time = datetime.now()
 
         try:
-            from src.graph.embedding_generator import EmbeddingGenerator
-
-            generator = EmbeddingGenerator(str(self.gold_path))
             chunk_ids, chunk_embeddings = self._load_embeddings()
+            generator = self._embedding_generator
 
             if chunk_embeddings is None or len(chunk_ids) == 0:
                 return ToolResult(
@@ -898,7 +1000,7 @@ class RetrievalToolkit:
             return None
 
         # Try known chunk directories first
-        for pattern in ["thread_chunks", "individual_chunks", "attachment_chunks/knowledge"]:
+        for pattern in ["technical/thread_chunks", "technical/email_chunks", "technical/attachment_chunks"]:
             chunk_path = self.silver_path / pattern / f"{chunk_id}.json"
             if chunk_path.exists():
                 with open(chunk_path, 'r', encoding='utf-8') as f:

@@ -157,7 +157,7 @@ class AnonymizationEvaluator:
         metrics: Dict[str, PIITypeMetrics] = defaultdict(lambda: PIITypeMetrics(pii_type=""))
 
         silver = Path(silver_path)
-        for chunk_dir in ["thread_chunks", "individual_chunks"]:
+        for chunk_dir in ["technical/thread_chunks", "technical/email_chunks"]:
             chunk_path = silver / chunk_dir
             if not chunk_path.exists():
                 continue
@@ -252,7 +252,7 @@ class AnonymizationEvaluator:
         total_person = 0
 
         silver = Path(silver_path)
-        for chunk_dir in ["thread_chunks", "individual_chunks"]:
+        for chunk_dir in ["technical/thread_chunks", "technical/email_chunks"]:
             chunk_path = silver / chunk_dir
             if not chunk_path.exists():
                 continue
@@ -325,7 +325,7 @@ class AnonymizationEvaluator:
         categories: Dict[str, List[str]] = defaultdict(list)
 
         silver = Path(silver_path)
-        for chunk_dir in ["thread_chunks", "individual_chunks"]:
+        for chunk_dir in ["technical/thread_chunks", "technical/email_chunks"]:
             chunk_path = silver / chunk_dir
             if not chunk_path.exists():
                 continue

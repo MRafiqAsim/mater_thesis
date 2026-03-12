@@ -178,8 +178,10 @@ data/silver/
 │   └── {attachment_id}.json
 ├── thread_chunks/
 │   └── conv:{thread_subject}_{chunk_index}.json
-├── individual_chunks/
+├── email_chunks/
 │   └── {message_id}_{chunk_index}.json
+├── email_summaries/
+│   └── {email_id}.json
 ├── thread_summaries/
 │   └── {thread_id}.json
 ├── pii_mappings/

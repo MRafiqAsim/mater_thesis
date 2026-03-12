@@ -382,7 +382,8 @@ Classified attachments are routed into subdirectories:
 
 ```
 silver/
-├── individual_chunks/          <- email body (single emails)
+├── email_chunks/               <- email body (single emails)
+├── email_summaries/            <- per-email summaries
 ├── thread_chunks/              <- email body (threaded emails)
 ├── attachment_chunks/
 │   ├── knowledge/              <- full-processed knowledge docs

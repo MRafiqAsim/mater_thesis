@@ -95,7 +95,8 @@ class HybridRetriever:
         self,
         gold_path: str,
         silver_path: Optional[str] = None,
-        config: Optional[HybridConfig] = None
+        config: Optional[HybridConfig] = None,
+        mode: str = "llm",
     ):
         """
         Initialize the hybrid retriever.
@@ -104,22 +105,24 @@ class HybridRetriever:
             gold_path: Path to Gold layer
             silver_path: Path to Silver layer
             config: Retrieval configuration
+            mode: Processing mode — "local" uses local models, "llm" uses Azure OpenAI
         """
         self.gold_path = Path(gold_path)
         self.silver_path = Path(silver_path) if silver_path else None
         self.config = config or HybridConfig()
+        self.mode = mode
 
         # Initialize toolkit
-        self.toolkit = RetrievalToolkit(str(gold_path), str(silver_path) if silver_path else None)
+        self.toolkit = RetrievalToolkit(str(gold_path), str(silver_path) if silver_path else None, mode=mode)
 
         # Initialize ReAct retriever
         self.react_retriever = ReActRetriever(str(gold_path), str(silver_path) if silver_path else None)
 
-        # LLM client for answer generation
+        # LLM client for answer generation (always try — even local mode uses LLM for answers)
         self.llm_client = None
         self._initialize_llm()
 
-        logger.info("HybridRetriever initialized")
+        logger.info(f"HybridRetriever initialized (mode={mode})")
 
     def _initialize_llm(self):
         """Initialize LLM for answer generation."""
@@ -357,6 +360,12 @@ class HybridRetriever:
                                 if chunk_result.success and chunk_result.data:
                                     chunks.append(chunk_result.data)
 
+        # If no chunks from communities, run vector search for evidence
+        if not chunks and extra_context:
+            vector_result = self.toolkit.vector_search(query, top_k=self.config.top_k_per_strategy)
+            if vector_result.success and vector_result.data:
+                chunks = vector_result.data
+
         # Deduplicate chunks
         seen_ids = set()
         unique_chunks = []
@@ -555,7 +564,7 @@ class HybridRetriever:
 
         subjects = set()
         silver = Path(self.silver_path)
-        for folder in ["thread_chunks", "individual_chunks"]:
+        for folder in ["technical/thread_chunks", "technical/email_chunks"]:
             folder_path = silver / folder
             if not folder_path.exists():
                 continue
@@ -570,70 +579,95 @@ class HybridRetriever:
                     pass
         return list(subjects)
 
-    def _extract_query_entities(self, query: str) -> List[str]:
+    def _extract_query_entities(self, query: str, top_n: int = 5) -> List[str]:
         """
-        Extract potential entity names from query and match against known graph entities.
+        PathRAG Node Retrieval (Stage 1 per paper).
 
-        Strategy:
-        1. Extract quoted phrases, capitalized words, and acronyms from query
-        2. Fuzzy-match all query terms against known graph entity names
-        3. Return matched graph entities (enables PathRAG even with lowercase queries)
+        1. Extract keywords from query (spaCy NER + content words)
+        2. Embed keywords with the same model used for entity embeddings
+        3. Cosine similarity against pre-computed entity embeddings
+        4. Return top-N entity names
+
+        Falls back to string matching if embeddings are unavailable.
+        """
+        # Step 1: Extract keywords from query
+        keywords = self._extract_keywords(query)
+        if not keywords:
+            return []
+
+        # Step 2+3: Dense vector matching against entity embeddings
+        matched = self.toolkit.node_retrieval(keywords, top_n=top_n)
+        if matched:
+            logger.info(f"PathRAG node retrieval: {len(keywords)} keywords → {len(matched)} entities")
+            return matched
+
+        # Fallback: string matching against node names
+        return self._match_graph_entities_by_name(keywords)
+
+    def _extract_keywords(self, query: str) -> List[str]:
+        """
+        Extract keywords from query using spaCy NER + content word extraction.
+
+        In LLM mode this could use GPT-4o; in local mode we use spaCy NER
+        plus content-word heuristics.
         """
         import re
 
-        entities = []
+        keywords = []
+
+        # 1. Quoted phrases (highest priority — explicit user intent)
+        quoted = re.findall(r'"([^"]+)"', query)
+        keywords.extend(quoted)
+
+        # 2. spaCy NER extraction (local, no LLM needed)
+        try:
+            import spacy
+            if not hasattr(self, '_nlp'):
+                self._nlp = spacy.load("en_core_web_sm")
+            doc = self._nlp(query)
+            for ent in doc.ents:
+                keywords.append(ent.text)
+        except Exception:
+            pass  # spaCy not available, fall through to heuristics
+
+        # 3. Content words (capitalized, acronyms, meaningful terms)
         stop_words = {
-            # Question words
             'the', 'a', 'an', 'what', 'who', 'where', 'when', 'how', 'why', 'which',
             'did', 'does', 'do', 'is', 'are', 'was', 'were', 'and', 'or', 'but',
-            # Request verbs
             'about', 'tell', 'me', 'can', 'you', 'find', 'show', 'get', 'give',
             'provide', 'list', 'all', 'every', 'any', 'some',
-            # Generic nouns (not entity names)
             'project', 'projects', 'email', 'emails', 'thread', 'threads',
             'information', 'details', 'data', 'discussed', 'mentioned',
             'people', 'person', 'things', 'stuff', 'work', 'used',
-            # Prepositions
             'in', 'on', 'at', 'to', 'for', 'of', 'with', 'from', 'by',
         }
 
-        # 1. Quoted phrases (highest priority)
-        quoted = re.findall(r'"([^"]+)"', query)
-        entities.extend(quoted)
-
-        # 2. Capitalized words and acronyms (any length)
         words = query.split()
+        content_words = []
         for word in words:
-            clean = re.sub(r'[?.!,]$', '', word)
-            if clean.lower() in stop_words:
+            clean = re.sub(r'[?.!,;:]$', '', word)
+            if clean.lower() in stop_words or len(clean) < 2:
                 continue
-            if clean.isupper() and len(clean) >= 2:  # Acronyms: GT, SQL, UAT
-                entities.append(clean)
+            content_words.append(clean)
+            # Capitalized words and acronyms as separate keywords
+            if clean.isupper() and len(clean) >= 2:
+                keywords.append(clean)
             elif clean[0:1].isupper() and len(clean) > 1:
-                entities.append(clean)
+                keywords.append(clean)
 
-        # 3. Build multi-word candidates from non-stop words
-        content_words = [re.sub(r'[?.!,]$', '', w) for w in words
-                        if w.lower() not in stop_words and len(w) > 1]
+        # 4. Bigrams/trigrams from content words
         if len(content_words) >= 2:
-            # Try bigrams and trigrams
             for i in range(len(content_words)):
                 for j in range(i + 2, min(i + 4, len(content_words) + 1)):
-                    phrase = " ".join(content_words[i:j])
-                    entities.append(phrase)
-        # Also add individual content words (only if they're meaningful)
-        entities.extend(content_words)
+                    keywords.append(" ".join(content_words[i:j]))
 
-        # 4. Match against known graph entities (fuzzy, case-insensitive)
-        matched = self._match_graph_entities(list(set(entities)))
+        # Add individual content words
+        keywords.extend(content_words)
 
-        # Return graph-matched entities if found, otherwise raw extractions
-        if matched:
-            return matched
-        return list(set(entities))
+        return list(set(keywords))
 
-    def _match_graph_entities(self, candidates: List[str]) -> List[str]:
-        """Match candidate strings against known graph entity names."""
+    def _match_graph_entities_by_name(self, candidates: List[str]) -> List[str]:
+        """Fallback: match candidate strings against known graph entity names."""
         if not self.gold_path:
             return candidates
 
@@ -659,11 +693,9 @@ class HybridRetriever:
         matched = []
         for candidate in candidates:
             candidate_lower = candidate.lower()
-            # Exact match
             if candidate_lower in self._graph_entity_names:
                 matched.append(self._graph_entity_names[candidate_lower])
                 continue
-            # Substring match (graph entity contains candidate or vice versa)
             for graph_lower, graph_name in self._graph_entity_names.items():
                 if candidate_lower in graph_lower or graph_lower in candidate_lower:
                     matched.append(graph_name)
@@ -703,9 +735,9 @@ class HybridRetriever:
 
         # 1. Search Silver layer for sibling chunks
         search_dirs = [
-            self.silver_path / "thread_chunks",
-            self.silver_path / "individual_chunks",
-            self.silver_path / "attachment_chunks" / "knowledge",
+            self.silver_path / "technical" / "thread_chunks",
+            self.silver_path / "technical" / "email_chunks",
+            self.silver_path / "technical" / "attachment_chunks",
         ]
 
         sibling_chunks = []
@@ -738,7 +770,7 @@ class HybridRetriever:
 
         # 2. Load thread summaries for matched threads
         summary_context = []
-        thread_summaries_dir = self.silver_path / "thread_summaries"
+        thread_summaries_dir = self.silver_path / "technical" / "thread_summaries"
         if thread_summaries_dir.exists():
             for summary_file in thread_summaries_dir.glob("*.json"):
                 try:
@@ -770,6 +802,12 @@ class HybridRetriever:
                 except Exception:
                     continue
 
+        # TODO: Email summaries (disabled — sibling chunks + thread summary suffice)
+        # email_summaries_dir = self.silver_path / "technical" / "email_summaries"
+        # if email_summaries_dir.exists():
+        #     for summary_file in email_summaries_dir.glob("*.json"):
+        #         ...
+
         expanded_count = len(sibling_chunks) + len(summary_context)
         if expanded_count:
             logger.info(
@@ -783,7 +821,7 @@ class HybridRetriever:
         """Load an attachment summary by ID from Silver layer."""
         if not self.silver_path:
             return None
-        summary_dir = self.silver_path / "attachment_summaries"
+        summary_dir = self.silver_path / "technical" / "attachment_summaries"
         if not summary_dir.exists():
             return None
         # Try exact match and sanitized match
@@ -820,12 +858,18 @@ class HybridRetriever:
     ) -> Tuple[str, bool, Optional[str]]:
         """
         Generate answer using LLM with grounding check.
+        Falls back to extractive summary in local mode.
 
         Returns:
             (answer, is_grounded, missing_info)
         """
-        if not self.llm_client or not chunks:
+        if not chunks and not extra_context:
             return "", True, None
+
+        # Local mode: use BART summarizer or extractive fallback
+        if not self.llm_client:
+            return self._generate_local_answer(query, chunks, extra_context)
+
 
         # Build context from chunks — label email vs attachment for LLM clarity
         context_parts = []
@@ -889,6 +933,49 @@ class HybridRetriever:
                 break
 
         return answer, is_grounded, missing_info
+
+    def _generate_local_answer(
+        self,
+        query: str,
+        chunks: List[Dict[str, Any]],
+        extra_context: str = ""
+    ) -> Tuple[str, bool, Optional[str]]:
+        """Generate answer locally using BART summarizer or extractive fallback."""
+        # Combine chunk texts
+        texts = []
+        for chunk in chunks[:5]:
+            text = chunk.get("text", chunk.get("text_anonymized", ""))[:500]
+            thread = chunk.get("thread_subject", "")
+            if thread:
+                texts.append(f"[{thread}] {text}")
+            else:
+                texts.append(text)
+
+        combined = "\n\n".join(texts)
+
+        if extra_context:
+            combined = f"{extra_context}\n\n{combined}"
+
+        # Try BART summarizer
+        try:
+            from silver.local_summarizer import summarize_text
+            summary = summarize_text(combined, max_length=200, min_length=50)
+            if summary:
+                return summary, True, None
+        except Exception as e:
+            logger.debug(f"BART summarization failed: {e}")
+
+        # Extractive fallback: return first few chunk texts
+        answer_parts = []
+        for chunk in chunks[:3]:
+            text = chunk.get("text", chunk.get("text_anonymized", ""))[:300]
+            thread = chunk.get("thread_subject", "")
+            if thread:
+                answer_parts.append(f"**{thread}**: {text}")
+            else:
+                answer_parts.append(text)
+
+        return "\n\n".join(answer_parts), True, None
 
     def compare_strategies(self, query: str) -> Dict[str, RetrievalResult]:
         """

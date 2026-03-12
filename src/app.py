@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 retriever: HybridRetriever | None = None
 _gold_path: str = ""
 _silver_path: str = ""
+_mode: str = "local"
 
 STRATEGY_LABELS = ["Vector", "PathRAG", "GraphRAG", "Hybrid", "ReAct"]
 STRATEGY_MAP = {
@@ -64,7 +65,7 @@ def get_retriever() -> HybridRetriever:
     """Get or create the singleton HybridRetriever."""
     global retriever
     if retriever is None:
-        retriever = HybridRetriever(_gold_path, _silver_path)
+        retriever = HybridRetriever(_gold_path, _silver_path, mode=_mode)
     return retriever
 
 
@@ -420,7 +421,7 @@ def parse_args():
 
 
 def main():
-    global _gold_path, _silver_path
+    global _gold_path, _silver_path, _mode
 
     args = parse_args()
     data_root = Path("./data")
@@ -442,6 +443,8 @@ def main():
     else:
         _silver_path = str(data_root / "silver_local")
 
+    _mode = args.mode or "local"
+
     if not Path(_gold_path).exists():
         logger.error(f"Gold path does not exist: {_gold_path}")
         sys.exit(1)
@@ -449,6 +452,7 @@ def main():
     print("\n" + "=" * 60)
     print("Retrieval Strategy Comparison")
     print("=" * 60)
+    print(f"  Mode:   {_mode}")
     print(f"  Gold:   {_gold_path}")
     print(f"  Silver: {_silver_path}")
     print(f"  Port:   {args.port}")
