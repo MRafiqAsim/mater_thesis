@@ -1,0 +1,76 @@
+============================================================
+PIPELINE COMMANDS
+============================================================
+
+
+============================================================
+SYSTEM DEPENDENCIES (Linux — install first)
+============================================================
+
+# Required system packages
+sudo apt update
+sudo apt install -y antiword             # Legacy .doc file parsing
+sudo apt install -y poppler-utils        # PDF to image (pdf2image)
+sudo apt install -y libmagic1            # File type detection (python-magic)
+sudo apt install -y pst-utils            # PST extraction (readpst)
+sudo apt install -y build-essential      # Compilation tools (some pip packages need this)
+
+# Optional: if using GPU for torch/transformers
+# sudo apt install -y nvidia-cuda-toolkit
+
+
+============================================================
+PYTHON DEPENDENCIES
+============================================================
+
+# Install all at once:
+pip install -r requirements.txt
+
+# spaCy models (run after pip install)
+python -m spacy download en_core_web_trf
+python -m spacy download nl_core_news_lg
+
+# NOTE: delta-spark requires Java/Spark — skip if not using Databricks:
+#   pip install -r requirements.txt --ignore-installed delta-spark
+#   or comment out delta-spark in requirements.txt before installing
+
+# NOTE: torch is ~2GB — needed for local summarization and spaCy transformer model
+
+
+============================================================
+LOCAL MODE (1000 emails)
+============================================================
+
+# Step 1: Silver — process 1000 emails with local models (free, no API cost)
+python -m src.pipeline.run_thread_processing --bronze ./data/bronze --silver ./data/silver_local --mode local --limit 1000
+
+# Step 2: Gold — build graph, communities, and embeddings (skip path indexing)
+python -m src.pipeline.run_gold_indexing --silver ./data/silver_local --gold ./data/gold_local --mode local --build-graph --build-communities --generate-embeddings
+
+# Step 3: Run the app
+python -m src.app --gold ./data/gold_local --silver ./data/silver_local --mode local
+
+
+============================================================
+LLM MODE (500 emails)
+============================================================
+
+# Step 1: Silver — process 500 emails with Azure GPT-4o (requires API key)
+python -m src.pipeline.run_thread_processing --bronze ./data/bronze --silver ./data/silver_llm --mode llm --limit 500
+
+# Step 2: Gold — build graph, communities, and embeddings (skip path indexing)
+python -m src.pipeline.run_gold_indexing --silver ./data/silver_llm --gold ./data/gold_llm --mode llm --build-graph --build-communities --generate-embeddings
+
+# Step 3: Run the app
+python -m src.app --gold ./data/gold_llm --silver ./data/silver_llm --mode llm
+
+
+============================================================
+INDIVIDUAL GOLD STEPS (if needed)
+============================================================
+
+# Run all gold steps including path indexing (WARNING: path indexing is slow on large data)
+python -m src.pipeline.run_gold_indexing --silver ./data/silver_local --gold ./data/gold_local --mode local --all
+
+# Re-generate embeddings only
+python -m src.pipeline.run_gold_indexing --silver ./data/silver_local --gold ./data/gold_local --mode local --generate-embeddings
