@@ -49,7 +49,7 @@ def evaluate_anonymization_quality(
 
     Returns metrics: precision, recall, F1, per-type breakdown
     """
-    from anonymization.pii_detector import PIIDetector
+    from silver.pii_detector import PIIDetector
     from conflict_handling.pii_evaluation import PIIEvaluator, GroundTruthLoader
     from conflict_handling.models import PIIAnnotation, PIIType
 
@@ -65,7 +65,7 @@ def evaluate_anonymization_quality(
     config = get_config()
 
     if config.mode.value == "openai":
-        from anonymization.openai_pii_detector import OpenAIPIIDetector
+        from silver.openai_pii_detector import OpenAIPIIDetector
 
         class DetectorWrapper:
             def __init__(self):
@@ -237,7 +237,7 @@ def run_demo():
     print(demo_text)
 
     # Process with unified processor
-    from anonymization.unified_processor import UnifiedProcessor
+    from silver.unified_processor import UnifiedProcessor
 
     try:
         processor = UnifiedProcessor(config)

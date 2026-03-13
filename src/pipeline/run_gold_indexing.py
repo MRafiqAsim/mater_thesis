@@ -12,18 +12,18 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
-# Add project root to path
+# Add src directory to path
 project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "src"))
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
 load_dotenv(project_root / ".env")
 
-from src.graph.graph_builder import GraphBuilder
-from src.graph.community_detector import CommunityDetector, CommunityConfig
-from src.graph.path_indexer import PathIndexer, PathIndexConfig
-from src.graph.embedding_generator import EmbeddingGenerator, EmbeddingConfig
+from gold.graph_builder import GraphBuilder
+from gold.community_detector import CommunityDetector, CommunityConfig
+from gold.path_indexer import PathIndexer, PathIndexConfig
+from gold.embedding_generator import EmbeddingGenerator, EmbeddingConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -253,7 +253,7 @@ def run_gold_indexing(args, mode_label: str, silver_path: Path, gold_path: Path)
         config = CommunityConfig(
             resolution=args.community_resolution,
             num_levels=args.community_levels,
-            use_llm_summarization=True
+            use_llm_summarization=(mode_label != "local"),
         )
 
         detector = CommunityDetector(knowledge_graph, str(gold_path), config)
@@ -312,7 +312,7 @@ def run_gold_indexing(args, mode_label: str, silver_path: Path, gold_path: Path)
         print("-" * 40)
 
         config = EmbeddingConfig(model=args.embedding_model)
-        generator = EmbeddingGenerator(str(gold_path), config)
+        generator = EmbeddingGenerator(str(gold_path), config, mode=mode_label)
 
         if not generator.is_available():
             logger.warning("Embedding generation not available (no API key)")

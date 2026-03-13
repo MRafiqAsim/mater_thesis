@@ -138,7 +138,7 @@ class PipelineComparator:
     def _collect_summarization_metrics(self, silver_path: str) -> Dict[str, Any]:
         """Collect summarization metrics from silver layer."""
         silver = Path(silver_path)
-        summaries_dir = silver / "thread_summaries"
+        summaries_dir = silver / "technical" / "thread_summaries"
 
         if not summaries_dir.exists():
             return {"summary_count": 0}

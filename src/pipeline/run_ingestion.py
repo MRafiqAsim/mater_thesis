@@ -32,11 +32,11 @@ load_dotenv()
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ingestion.pst_extractor import PSTExtractor
-from ingestion.document_parser import DocumentParser
-from ingestion.bronze_loader import BronzeLayerLoader
-from ingestion.attachment_processor import AttachmentProcessor
-from anonymization.silver_processor import SilverLayerProcessor
+from bronze.pst_extractor import PSTExtractor
+from bronze.document_parser import DocumentParser
+from bronze.bronze_loader import BronzeLayerLoader
+from bronze.attachment_processor import AttachmentProcessor
+from silver.silver_processor import SilverLayerProcessor
 from conflict_handling.pii_evaluation import PIIEvaluator, GroundTruthLoader
 
 # Configure logging
@@ -52,19 +52,18 @@ def extract_pst_to_bronze(
     bronze_path: str,
     attachment_dir: Optional[str] = None,
     max_emails: Optional[int] = None,
-    classify_sensitivity: bool = True,
-    sensitivity_rules_path: Optional[str] = None,
 ) -> dict:
     """
     Extract emails from PST file to Bronze layer.
+
+    Bronze is pure extraction — no classification or filtering.
+    Classification happens in Silver layer.
 
     Args:
         pst_path: Path to PST file
         bronze_path: Output Bronze layer path
         attachment_dir: Directory for attachments
         max_emails: Maximum number of emails to extract
-        classify_sensitivity: Run email sensitivity classification
-        sensitivity_rules_path: Path to custom sensitivity_rules.yaml
 
     Returns:
         Extraction statistics
@@ -77,12 +76,8 @@ def extract_pst_to_bronze(
         attachment_output_dir=attachment_dir or f"{bronze_path}/attachments"
     )
 
-    # Initialize loader
-    loader = BronzeLayerLoader(
-        bronze_path=bronze_path,
-        classify_sensitivity=classify_sensitivity,
-        sensitivity_rules_path=sensitivity_rules_path,
-    )
+    # Initialize loader (pure extraction, no classification)
+    loader = BronzeLayerLoader(bronze_path=bronze_path)
 
     # Progress callback
     def progress(count, message):
@@ -103,21 +98,21 @@ def extract_pst_to_bronze(
         raise
 
 
-def classify_bronze_attachments(bronze_path: str) -> dict:
+def extract_bronze_attachments(bronze_path: str) -> dict:
     """
-    Classify all attachments in the Bronze layer.
+    Extract text from all attachments in the Bronze layer.
 
-    Extracts text, classifies (knowledge/transactional/other), moves files
-    into classified subdirectories, writes co-located metadata JSON, and
-    enriches the parent email JSON with classification fields.
+    Bronze is pure extraction — text is extracted and stored alongside
+    binary files. No classification or filtering happens here.
+    Classification moves to Silver layer.
 
     Args:
         bronze_path: Bronze layer path
 
     Returns:
-        Classification statistics
+        Extraction statistics
     """
-    logger.info(f"Classifying Bronze attachments: {bronze_path}")
+    logger.info(f"Extracting Bronze attachment text: {bronze_path}")
 
     processor = AttachmentProcessor(bronze_path=bronze_path)
 
@@ -126,7 +121,7 @@ def classify_bronze_attachments(bronze_path: str) -> dict:
 
     stats = processor.process_all_attachments(progress_callback=progress)
 
-    logger.info(f"Attachment classification complete: {stats}")
+    logger.info(f"Attachment text extraction complete: {stats}")
     return stats
 
 
@@ -263,7 +258,7 @@ def evaluate_anonymization(
     ground_truth = GroundTruthLoader.load_from_json(ground_truth_path)
 
     # Create detector wrapper for evaluation
-    from anonymization.pii_detector import PIIDetector
+    from silver.pii_detector import PIIDetector
 
     class DetectorWrapper:
         def __init__(self):
@@ -324,8 +319,6 @@ def run_full_pipeline(
     ground_truth_path: Optional[str] = None,
     chunk_size: int = 512,
     max_emails: Optional[int] = None,
-    classify_sensitivity: bool = True,
-    sensitivity_rules_path: Optional[str] = None,
 ) -> dict:
     """
     Run the full ingestion and anonymization pipeline.
@@ -357,16 +350,14 @@ def run_full_pipeline(
         logger.info("=" * 60)
         pst_stats = extract_pst_to_bronze(
             pst_path, bronze_path, max_emails=max_emails,
-            classify_sensitivity=classify_sensitivity,
-            sensitivity_rules_path=sensitivity_rules_path,
         )
         all_stats["bronze_stats"]["pst"] = pst_stats
 
-        # Step 1.5: Classify all attachments (extract text, classify, move, enrich)
+        # Step 1.5: Extract text from all attachments (no classification)
         logger.info("=" * 60)
-        logger.info("STEP 1.5: Attachment Classification → Bronze Layer")
+        logger.info("STEP 1.5: Attachment Text Extraction → Bronze Layer")
         logger.info("=" * 60)
-        att_stats = classify_bronze_attachments(bronze_path)
+        att_stats = extract_bronze_attachments(bronze_path)
         all_stats["bronze_stats"]["attachment_classification"] = att_stats
 
     # Step 2: Parse documents to Bronze
@@ -377,22 +368,8 @@ def run_full_pipeline(
         doc_stats = parse_documents_to_bronze(docs_path, bronze_path)
         all_stats["bronze_stats"]["documents"] = doc_stats
 
-    # Step 3: Process Bronze to Silver
-    logger.info("=" * 60)
-    logger.info("STEP 3: Bronze → Silver Layer (Chunking + Anonymization)")
-    logger.info("=" * 60)
-    silver_stats = process_bronze_to_silver(
-        bronze_path, silver_path, chunk_size=chunk_size
-    )
-    all_stats["silver_stats"] = silver_stats
-
-    # Step 4: Evaluate anonymization (if ground truth provided)
-    if ground_truth_path:
-        logger.info("=" * 60)
-        logger.info("STEP 4: Anonymization Evaluation")
-        logger.info("=" * 60)
-        eval_stats = evaluate_anonymization(silver_path, ground_truth_path)
-        all_stats["evaluation_stats"] = eval_stats
+    # Silver processing is handled separately by run_thread_processing.py
+    # Run: python run_thread_processing.py --mode llm --bronze ./data/bronze --silver ./data/silver
 
     all_stats["end_time"] = datetime.now().isoformat()
 
@@ -431,8 +408,8 @@ Examples:
   # With evaluation
   python run_ingestion.py --bronze ./data/bronze --silver ./data/silver --evaluate ground_truth.json
 
-  # Classify attachments on existing Bronze (re-classification)
-  python run_ingestion.py --bronze ./data/bronze --classify-attachments
+  # Extract text from attachments on existing Bronze
+  python run_ingestion.py --bronze ./data/bronze --extract-attachments
 
   # Clean up legacy duplicate storage
   python run_ingestion.py --bronze ./data/bronze --cleanup-attachments
@@ -492,9 +469,9 @@ Examples:
 
     # Attachment management
     parser.add_argument(
-        "--classify-attachments",
+        "--extract-attachments",
         action="store_true",
-        help="Classify all Bronze attachments (extract, classify, move, enrich)"
+        help="Extract text from all Bronze attachments (standalone operation)"
     )
     parser.add_argument(
         "--cleanup-attachments",
@@ -502,17 +479,8 @@ Examples:
         help="Remove legacy duplicate storage (32-char dirs, old cache)"
     )
 
-    # Sensitivity classification
-    parser.add_argument(
-        "--no-sensitivity",
-        action="store_true",
-        help="Skip email sensitivity classification in Bronze layer"
-    )
-    parser.add_argument(
-        "--sensitivity-rules",
-        type=str,
-        help="Path to custom sensitivity_rules.yaml"
-    )
+    # NOTE: Email sensitivity and attachment classification moved to Silver layer.
+    # Use run_thread_processing.py --mode local|llm|hybrid for classification.
 
     # Limit
     parser.add_argument(
@@ -536,8 +504,8 @@ Examples:
         logging.getLogger().setLevel(logging.DEBUG)
 
     # Validate inputs
-    if not any([args.pst, args.documents, args.bronze, args.classify_attachments, args.cleanup_attachments]):
-        parser.error("Must specify at least one of: --pst, --documents, --bronze, --classify-attachments, or --cleanup-attachments")
+    if not any([args.pst, args.documents, args.bronze, args.extract_attachments, args.cleanup_attachments]):
+        parser.error("Must specify at least one of: --pst, --documents, --bronze, --extract-attachments, or --cleanup-attachments")
 
     # Determine paths
     bronze_path = args.bronze or f"{args.output}/bronze"
@@ -549,8 +517,8 @@ Examples:
     # Run pipeline
     try:
         # Standalone attachment operations (no Silver processing needed)
-        if args.classify_attachments:
-            classify_bronze_attachments(bronze_path)
+        if args.extract_attachments:
+            extract_bronze_attachments(bronze_path)
 
         if args.cleanup_attachments:
             cleanup_bronze_attachments(bronze_path)
@@ -564,39 +532,37 @@ Examples:
             sys.exit(0)
 
         if args.bronze:
-            # Bronze already exists, just process to Silver
-            stats = process_bronze_to_silver(
-                bronze_path=bronze_path,
-                silver_path=silver_path,
-                chunk_size=args.chunk_size,
-                chunk_overlap=args.chunk_overlap
-            )
-
-            if args.evaluate:
-                evaluate_anonymization(silver_path, args.evaluate)
+            # Bronze already exists — run attachment extraction only
+            stats = extract_bronze_attachments(bronze_path)
 
         else:
-            # Full pipeline
+            # Full Bronze pipeline (PST + documents + attachment extraction)
             stats = run_full_pipeline(
                 pst_path=args.pst,
                 docs_path=args.documents,
                 output_path=args.output,
-                ground_truth_path=args.evaluate,
                 chunk_size=args.chunk_size,
                 max_emails=args.limit,
-                classify_sensitivity=not args.no_sensitivity,
-                sensitivity_rules_path=args.sensitivity_rules,
             )
 
+        # Print summary
         print("\n" + "=" * 60)
-        print("SUCCESS! Pipeline completed.")
+        print("SUCCESS! Bronze layer ready.")
         print("=" * 60)
-        print(f"\nBronze layer: {bronze_path}")
-        print(f"Silver layer: {silver_path}")
-
-        if isinstance(stats, dict) and "silver_stats" in stats:
-            print(f"\nChunks created: {stats.get('silver_stats', {}).get('chunks_created', 'N/A')}")
-            print(f"PII detected: {stats.get('silver_stats', {}).get('pii_detected', 'N/A')}")
+        print(f"\n  Bronze layer:  {bronze_path}")
+        if isinstance(stats, dict):
+            pst_stats = stats.get("bronze_stats", {}).get("pst", stats)
+            print(f"  Emails:        {pst_stats.get('emails_saved', pst_stats.get('success', 'N/A'))}")
+            att_stats = stats.get("bronze_stats", {}).get("attachment_classification", {})
+            if att_stats:
+                print(f"  Attachments:   {att_stats.get('processed', 'N/A')} processed, "
+                      f"{att_stats.get('success', 'N/A')} text extracted, "
+                      f"{att_stats.get('unsupported', 0)} unsupported format, "
+                      f"{att_stats.get('failed', 0)} failed")
+        print(f"\n  Next step (Silver):")
+        print(f"    python run_thread_processing.py --mode llm --bronze {bronze_path}")
+        print(f"\n  Then (Gold):")
+        print(f"    python run_gold_indexing.py --mode llm --all")
 
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")

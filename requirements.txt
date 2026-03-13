@@ -34,6 +34,8 @@ python-magic>=0.4.27
 xlrd>=2.0.1                # Legacy XLS support
 striprtf>=0.0.26           # RTF parsing
 beautifulsoup4>=4.12.0     # HTML parsing
+pdf2image>=1.16.0          # PDF→image for Vision OCR (requires poppler)
+# antiword for legacy DOC: brew install antiword (mac) | apt install antiword (linux)
 
 # PST Extraction (choose one based on platform)
 # pypff>=20231001          # Recommended for PST (requires compilation)
@@ -48,6 +50,9 @@ tiktoken>=0.5.0
 langdetect>=1.0.9
 langid>=1.1.6              # Fallback language detection
 python-dateutil>=2.8.2     # Date parsing
+transformers>=4.36.0       # BART local summarization
+torch>=2.1.0               # PyTorch backend for transformers
+sentence-transformers>=2.2.0  # Local embeddings (all-MiniLM-L6-v2)
 
 # spaCy models (install separately):
 # python -m spacy download en_core_web_trf

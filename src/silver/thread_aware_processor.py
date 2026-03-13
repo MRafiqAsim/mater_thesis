@@ -889,7 +889,6 @@ class ThreadAwareProcessor:
             │   ├── email_chunks/
             │   ├── attachment_chunks/knowledge/
             │   ├── thread_summaries/
-            │   ├── email_summaries/
             │   └── attachment_summaries/
             ├── non_technical/        ← raw Bronze data, skipped
             └── metadata/
@@ -898,7 +897,7 @@ class ThreadAwareProcessor:
         directories = [
             tech / "thread_chunks",
             tech / "thread_summaries",
-            tech / "email_summaries",
+            # tech / "email_summaries",  # disabled — re-enable with email summary generation
             tech / "email_chunks",
             tech / "attachment_chunks",
             tech / "attachment_summaries",

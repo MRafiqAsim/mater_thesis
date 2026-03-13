@@ -19,7 +19,7 @@ from pathlib import Path
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from anonymization.pii_detector import PIIDetector, PIIType as DetectorPIIType
+from silver.pii_detector import PIIDetector, PIIType as DetectorPIIType
 from conflict_handling.pii_evaluation import (
     PIIEvaluator,
     GroundTruthLoader,
