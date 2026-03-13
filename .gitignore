@@ -57,6 +57,20 @@ desktop.ini
 # Data directories (large files - don't commit)
 data/
 
+# Documentation (not pipeline code)
+docs/
+*.md
+!requirements.txt
+
+# Legacy packages (moved to bronze/silver/gold)
+src/anonymization/
+src/extraction/
+src/graph/
+src/ingestion/
+
+# Conflict handling (not used in pipeline)
+src/conflict_handling/
+
 # Logs
 *.log
 logs/
