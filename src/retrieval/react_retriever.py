@@ -277,7 +277,7 @@ class ReActRetriever:
                     model=self.config.model,
                     messages=messages,
                     temperature=self.config.temperature,
-                    max_tokens=2000
+                    max_tokens=4000
                 )
 
                 response_text = response.choices[0].message.content
@@ -356,7 +356,12 @@ class ReActRetriever:
         )
 
     def _format_observation(self, tool_result: ToolResult) -> str:
-        """Format tool result as observation string."""
+        """Format tool result as observation for the ReAct reasoning loop.
+
+        Preserves full content so the agent has complete evidence for synthesis.
+        The LLM context window (128K for GPT-4o) is the natural limit — no
+        artificial truncation.
+        """
         if not tool_result.success:
             return f"Error: {tool_result.message}"
 
@@ -364,29 +369,30 @@ class ReActRetriever:
         if isinstance(data, list):
             if len(data) == 0:
                 return "No results found."
-            # For entity listings and type discovery, show more items
+
             is_entity_listing = tool_result.tool_name in ("list_entities", "list_entity_types")
-            max_items = 20 if is_entity_listing else 5
-            # Summarize list results
+            max_items = 30 if is_entity_listing else 15
+
             summaries = []
             for item in data[:max_items]:
                 if isinstance(item, dict):
-                    # Format dict nicely — always include IDs so the agent can reference them
                     summary_parts = []
-                    for key in ['chunk_id', 'community_id', 'path_id', 'type', 'count', 'description', 'summary', 'text', 'name', 'path_type', 'connections']:
+                    for key in ['chunk_id', 'community_id', 'path_id', 'type', 'count',
+                                'description', 'summary', 'text', 'name', 'path_type',
+                                'connections', 'thread_subject', 'source_type']:
                         if key in item:
-                            value = str(item[key])[:200]
+                            value = str(item[key])
                             summary_parts.append(f"{key}: {value}")
-                    summaries.append(" | ".join(summary_parts[:5]))
+                    summaries.append(" | ".join(summary_parts))
                 else:
-                    summaries.append(str(item)[:100])
+                    summaries.append(str(item))
             result_text = f"Found {len(data)} results:\n" + "\n".join(f"- {s}" for s in summaries)
             if len(data) > max_items:
                 result_text += f"\n... and {len(data) - max_items} more"
             return result_text
 
         elif isinstance(data, dict):
-            # For global_search / local_search, the answer is the primary output
+            # For global_search / local_search, pass full answer to agent
             if "answer" in data and tool_result.tool_name in ("global_search", "local_search"):
                 answer = data["answer"]
                 meta_parts = []
@@ -395,24 +401,20 @@ class ReActRetriever:
                         continue
                     if isinstance(v, list):
                         meta_parts.append(f"{k}: [{len(v)} items]")
-                    elif isinstance(v, str) and len(v) > 100:
-                        meta_parts.append(f"{k}: {v[:100]}...")
                     else:
                         meta_parts.append(f"{k}: {v}")
                 meta = " | ".join(meta_parts)
                 return f"Answer: {answer}\n\nMetadata: {meta}" if meta else f"Answer: {answer}"
 
-            # Format single result
+            # Format full result
             parts = []
-            for key, value in list(data.items())[:10]:
-                if isinstance(value, str) and len(value) > 200:
-                    value = value[:200] + "..."
-                elif isinstance(value, list):
+            for key, value in data.items():
+                if isinstance(value, list):
                     value = f"[{len(value)} items]"
                 parts.append(f"{key}: {value}")
             return "\n".join(parts)
 
-        return str(data)[:500]
+        return str(data)
 
     def _extract_sources(self, tool_result: ToolResult) -> List[Dict[str, Any]]:
         """Extract source references from tool result."""
@@ -460,23 +462,31 @@ class ReActRetriever:
         steps: List[ReActStep],
         sources: List[Dict[str, Any]]
     ) -> str:
-        """Generate a synthesized answer when max steps reached without FINAL_ANSWER."""
-        # Collect all observations
-        observations = []
-        for step in steps:
-            if step.observation:
-                observations.append(step.observation)
+        """Generate a synthesized answer when max steps reached without FINAL_ANSWER.
+
+        Passes all collected observations (untruncated) to the LLM for final
+        synthesis. GPT-4o's 128K context window is the only practical limit.
+        """
+        observations = [step.observation for step in steps if step.observation]
+        thoughts = [step.thought for step in steps if step.thought]
 
         if not observations:
             return "I was unable to find relevant information to answer this question."
 
-        # Use LLM to synthesize a proper answer from the raw observations
         if self.client:
-            context = "\n\n---\n\n".join(obs[:600] for obs in observations[:5])
+            # Build full context from all reasoning steps
+            context_parts = []
+            for i, step in enumerate(steps, 1):
+                if step.thought:
+                    context_parts.append(f"[Step {i} — Reasoning]: {step.thought}")
+                if step.observation:
+                    context_parts.append(f"[Step {i} — Evidence]: {step.observation}")
+            context = "\n\n---\n\n".join(context_parts)
+
             fallback_sys = get_prompt("retrieval", "react_agent", "fallback_system_prompt",
-                "You are a helpful assistant that answers questions based ONLY on the provided context.")
+                "You are a knowledge retrieval expert synthesizing evidence from an enterprise email archive.")
             fallback_user = get_prompt("retrieval", "react_agent", "fallback_user_prompt",
-                "Context:\n{context}\n\nQuestion: {question}\n\nAnswer based ONLY on the context above.")
+                "Context:\n{context}\n\nQuestion: {question}\n\nProvide a comprehensive, detailed answer based on the evidence above.")
             try:
                 response = self.client.chat.completions.create(
                     model=self.config.model,
@@ -487,13 +497,12 @@ class ReActRetriever:
                         )},
                     ],
                     temperature=get_prompt("retrieval", "react_agent", "temperature", 0.3),
-                    max_tokens=get_prompt("retrieval", "react_agent", "max_tokens", 1000),
+                    max_tokens=get_prompt("retrieval", "react_agent", "max_tokens", 2000),
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:
                 logger.error(f"Summary answer generation failed: {e}")
 
-        # Last resort fallback if LLM call fails
         return "I found relevant information but was unable to synthesize a complete answer. Please try rephrasing your question."
 
     def is_available(self) -> bool:
