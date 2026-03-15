@@ -1,0 +1,38 @@
+{
+  "record_id": "a31861da38a3cb35c9a68b1b6e2e93f3",
+  "source_file": "data/input/P2_KLAARDERIJEN_backup_6_dec_2025.pst",
+  "file_type": ".pst",
+  "ingestion_time": "2026-03-15T16:52:44.007003",
+  "email_headers": {
+    "subject": "RE: Gardolene 25M : DANK",
+    "sender": "trstestsetes",
+    "sender_email": "trstestsetes@bekaert.com",
+    "recipients_to": [
+      {
+        "name": "lucsdfsd.dfsdf",
+        "email": "lucsdfsd.dfsdf@bekaert.com"
+      }
+    ],
+    "recipients_cc": [
+      {
+        "name": "sadsa asdsad",
+        "email": "sadsaasdsad@bekaert.com"
+      }
+    ],
+    "recipients_bcc": [],
+    "folder_path": "Hoofdmap van Outlook-gegevensbestand/P2_KLAARDERIJEN/klaarderijen/Van Buren/Gardolene 25 M",
+    "message_id": "AM0PR03MB622858A10DFC93E73C66E10F9A59A@AM0PR03MB6228.eurprd03.prod.outlook.com",
+    "in_reply_to": "PA4PR03MB7503A0AACA4EB47171F7CF4DEC59A@PA4PR03MB7503.eurprd03.prod.outlook.com",
+    "references": [
+      "GV1PR03MB8112FE4DFB77295FABCEAF9A9748A@GV1PR03MB8112.eurprd03.prod.outlook.com",
+      "PA4PR03MB75030A53E7A40BF1F81C42D8EC5FA@PA4PR03MB7503.eurprd03.prod.outlook.com",
+      "PA4PR03MB7503F20C2A315693C45300F4EC5EA@PA4PR03MB7503.eurprd03.prod.outlook.com",
+      "GV1PR03MB81128023FF1199AC3AF63856975EA@GV1PR03MB8112.eurprd03.prod.outlook.com",
+      "AS8PR03MB74961FFDB71FCC5DD4DE43A58B5EA@AS8PR03MB7496.eurprd03.prod.outlook.com",
+      "PA4PR03MB7503A0AACA4EB47171F7CF4DEC59A@PA4PR03MB7503.eurprd03.prod.outlook.com"
+    ],
+    "conversation_id": "Gardolene 25M : DANK",
+    "return_path": "trstestsetes@bekaert.com",
+    "x_originating_ip": null
+  },
+  "email_body_text": 
