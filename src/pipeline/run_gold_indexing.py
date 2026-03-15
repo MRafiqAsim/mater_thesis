@@ -29,15 +29,19 @@ from pathlib import Path as _Path
 _project_root = _Path(__file__).resolve().parent.parent.parent
 _log_dir = _project_root / "logs"
 _log_dir.mkdir(exist_ok=True)
-_log_format = '%(asctime)s - %(levelname)s - %(message)s'
-logging.basicConfig(
-    level=logging.INFO,
-    format=_log_format,
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(str(_log_dir / "gold.log"), mode="a", encoding="utf-8"),
-    ],
-)
+_log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+
+_root = logging.getLogger()
+_root.setLevel(logging.INFO)
+if not any(isinstance(h, logging.FileHandler) and 'gold.log' in getattr(h, 'baseFilename', '')
+           for h in _root.handlers):
+    _root.addHandler(logging.FileHandler(str(_log_dir / "gold.log"), mode="a", encoding="utf-8"))
+if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+           for h in _root.handlers):
+    _root.addHandler(logging.StreamHandler())
+for h in _root.handlers:
+    h.setFormatter(logging.Formatter(_log_format))
+
 logger = logging.getLogger(__name__)
 
 
