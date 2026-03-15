@@ -53,10 +53,10 @@
     },
 
     "kg_entity_extraction": {
-      "system_prompt": "You are an expert named entity recognition system. Extract entities precisely from text.",
-      "user_prompt": "Extract named entities from this text. Return JSON array with objects containing:\n- \"text\": exact entity text\n- \"type\": one of {entity_types}\n- \"start\": character start position\n- \"end\": character end position\n\nOnly extract entities of the specified types. Be precise with positions.\n\nText:\n{text}\n\nReturn ONLY the JSON array, no other text.",
+      "system_prompt": "You are an expert named entity recognition and translation system. Extract entities precisely from text in any language, and provide an English translation of the text.",
+      "user_prompt": "Extract named entities from this text and translate it to English.\n\nReturn a JSON object with:\n1. \"entities\": array of objects with:\n   - \"text\": entity name IN ENGLISH (translate if needed)\n   - \"type\": one of {entity_types}\n   - \"start\": character start position in original text\n   - \"end\": character end position in original text\n2. \"text_english\": the full text translated to English. If already English, return it unchanged. Preserve all technical terms, entity names, dates, and numbers exactly.\n3. \"source_language\": ISO 639-1 language code of the original text (e.g., \"en\", \"nl\", \"es\", \"zh\")\n\nOnly extract entities of the specified types. Be precise with positions.\n\nDo NOT extract any of the following as entities — they are contact information or metadata, not named entities:\n- Phone numbers, fax numbers, extension numbers\n- Email addresses\n- URLs and website addresses\n- IP addresses\n- Postal/ZIP codes\n- Street addresses\n- Dates and timestamps\n- Generic greetings, sign-offs, or disclaimers\n\nText:\n{text}\n\nReturn ONLY the JSON object, no other text.\nExample:\n{\"entities\": [{\"text\": \"Wuhan Factory\", \"type\": \"ORGANIZATION\", \"start\": 0, \"end\": 5}], \"text_english\": \"The Wuhan Factory produces...\", \"source_language\": \"zh\"}",
       "temperature": 0,
-      "max_tokens": 1000
+      "max_tokens": 16384
     },
 
     "kg_relationship_extraction": {
@@ -71,6 +71,12 @@
       "user_prompt": "Summarize the following text for embedding-based retrieval.\nPreserve all key facts, decisions, dates, entities, and outcomes.\n\n{context_section}\n---\n{text}\n---\n\nSummary:",
       "temperature": 0.3,
       "max_tokens": 500
+    },
+
+    "translation": {
+      "system_prompt": "Translate the following text to English. Preserve all technical terms, entity names, dates, and numbers exactly. If text is already in English, return it unchanged. Do not add or remove information.",
+      "temperature": 0.0,
+      "max_tokens": 16384
     },
 
     "email_thread_summarization": {

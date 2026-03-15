@@ -504,6 +504,15 @@ class PSTExtractor:
             if not body_text and body_html:
                 body_text = self._html_to_text(body_html)
 
+            # Fallback: try RTF body (common in pre-2003 Outlook)
+            if not body_text and hasattr(message, 'rtf_body') and message.rtf_body:
+                try:
+                    from striprtf.striprtf import rtf_to_text
+                    rtf_raw = self._decode_body(message.rtf_body)
+                    body_text = rtf_to_text(rtf_raw)
+                except Exception as e:
+                    logger.debug(f"RTF body extraction failed: {e}")
+
             # Parse timestamps
             sent_time = None
             received_time = None

@@ -718,7 +718,7 @@ class RetrievalToolkit:
                     detailed_results.append({
                         "chunk_id": chunk_id,
                         "similarity_score": score,
-                        "text": chunk_data.get("text_anonymized", "")[:500],
+                        "text": chunk_data.get("text_english") or chunk_data.get("text_anonymized", ""),
                         "thread_id": chunk_data.get("thread_id"),
                         "thread_subject": chunk_data.get("thread_subject"),
                         "source_type": chunk_data.get("source_type", "email"),
@@ -941,7 +941,7 @@ class RetrievalToolkit:
 
             result = {
                 "chunk_id": chunk_id,
-                "text": chunk_data.get("text_anonymized", chunk_data.get("text_original", "")),
+                "text": chunk_data.get("text_english") or chunk_data.get("text_anonymized", chunk_data.get("text_original", "")),
                 "thread_id": chunk_data.get("thread_id"),
                 "thread_subject": chunk_data.get("thread_subject"),
                 "email_position": chunk_data.get("email_position"),
@@ -1161,7 +1161,7 @@ class RetrievalToolkit:
                 for cid in source_chunks[:max_chunks_per_community]:
                     chunk_data = self._load_chunk(cid)
                     if chunk_data:
-                        text = chunk_data.get("text_anonymized", "")[:300]
+                        text = chunk_data.get("text_english") or chunk_data.get("text_anonymized", "")
                         if text:
                             source_text_parts.append(text)
 
@@ -1405,7 +1405,7 @@ class RetrievalToolkit:
             for cid in list(source_chunk_ids)[:10]:
                 chunk_data = self._load_chunk(cid)
                 if chunk_data:
-                    text = chunk_data.get("text_anonymized", "")[:400]
+                    text = chunk_data.get("text_english") or chunk_data.get("text_anonymized", "")
                     if text:
                         source_text_parts.append(text)
 
@@ -1484,14 +1484,14 @@ class RetrievalToolkit:
         if not self.silver_path:
             return None
 
-        # Try known chunk directories first
+        # chunk_id is already a safe filename — direct lookup
         for pattern in ["technical/thread_chunks", "technical/email_chunks", "technical/attachment_chunks"]:
             chunk_path = self.silver_path / pattern / f"{chunk_id}.json"
             if chunk_path.exists():
                 with open(chunk_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
 
-        # Try glob search
+        # Glob fallback
         for chunk_file in self.silver_path.glob(f"**/{chunk_id}.json"):
             with open(chunk_file, 'r', encoding='utf-8') as f:
                 return json.load(f)

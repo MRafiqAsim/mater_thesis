@@ -295,8 +295,8 @@ class EmbeddingGenerator:
                     chunk_data = json.load(f)
 
                 chunk_id = chunk_data.get("chunk_id", chunk_file.stem)
-                text_field = "text_anonymized" if use_anonymized else "text_original"
-                text = chunk_data.get(text_field, "")
+                # Prefer text_english (multilingual normalized), fall back to text_anonymized
+                text = chunk_data.get("text_english") or chunk_data.get("text_anonymized" if use_anonymized else "text_original", "")
 
                 if text:
                     chunk_ids.append(chunk_id)

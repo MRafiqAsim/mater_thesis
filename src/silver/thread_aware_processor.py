@@ -55,13 +55,16 @@ class ThreadChunk:
     # Content
     text_original: str
     text_anonymized: str
-    token_count: int
 
     # Thread context
     thread_subject: str
     thread_participants: List[str]
     thread_email_count: int
     email_position: str  # e.g., "1/5", "3/5"
+
+    # Content (with defaults)
+    text_english: str = ""  # English-normalized text for retrieval (translation if non-English)
+    token_count: int = 0
 
     # PII (for anonymization)
     pii_entities: List[Dict[str, Any]] = field(default_factory=list)
@@ -104,6 +107,7 @@ class ThreadChunk:
             "chunk_index": self.chunk_index,
             "text_original": self.text_original,
             "text_anonymized": self.text_anonymized,
+            "text_english": self.text_english,
             "token_count": self.token_count,
             "thread_subject": self.thread_subject,
             "thread_participants": self.thread_participants,
@@ -540,17 +544,27 @@ class ThreadAwareProcessor:
 
         return result.strip()
 
-    def _extract_kg_entities(self, text: str, language: str) -> Tuple[List[Dict[str, Any]], List[KGEntity]]:
+    def _extract_kg_entities(self, text: str, language: str) -> Tuple[List[Dict[str, Any]], List[KGEntity], str, str]:
         """
         Extract knowledge graph entities using modular extractor.
 
         Delegates to configured KG extractor (spaCy, LLM, or hybrid).
-        Returns tuple of (entity_dicts, raw_entities) for PathRAG.
+        In LLM mode, also returns text_english and detected source_language
+        from the same API call (combined KG extraction + translation).
+
+        Returns tuple of (entity_dicts, raw_entities, text_english, detected_language).
+        For spaCy/local mode, text_english and detected_language are empty strings
+        (caller falls back to using anonymized_text as-is).
         """
         entities = self.kg_extractor.extract(text, language)
         entity_dicts = [e.to_dict() for e in entities]
         self.stats["kg_entities_extracted"] += len(entity_dicts)
-        return entity_dicts, entities
+
+        # LLM extractor returns text_english and source_language from the same call
+        text_english = getattr(self.kg_extractor, 'last_text_english', '') or ''
+        detected_lang = getattr(self.kg_extractor, 'last_source_language', '') or ''
+
+        return entity_dicts, entities, text_english, detected_lang
 
     def _get_person_pseudonym(self, name: str) -> str:
         """
@@ -805,9 +819,6 @@ class ThreadAwareProcessor:
             for ci, chunk in enumerate(text_chunks):
                 if ci % 10 == 0:
                     logger.info(f"    Chunk {ci+1}/{len(text_chunks)} of '{att_content.filename}'")
-                # Extract KG entities — always needed
-                kg_entity_dicts, kg_entities_raw = self._extract_kg_entities(chunk.text, language)
-                kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
 
                 if should_anonymize:
                     anon_result = self.anonymizer.anonymize(chunk.text, language)
@@ -815,13 +826,30 @@ class ThreadAwareProcessor:
                     anonymized_text = anon_result.anonymized_text
                     pii_entities = [e.to_dict() for e in anon_result.entities]
                     pii_count = anon_result.entity_count
-                    final_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
-                    final_kg_rels = self._anonymize_kg_relationships(kg_relationships)
-                    final_participants = self._anonymize_participants(participants)
                 else:
                     anonymized_text = self._clean_text(chunk.text)
                     pii_entities = []
                     pii_count = 0
+
+                # Extract KG entities — in LLM mode, also returns text_english
+                # from the same API call (combined extraction + translation)
+                kg_entity_dicts, kg_entities_raw, llm_text_english, detected_lang = \
+                    self._extract_kg_entities(anonymized_text, language)
+
+                # In LLM mode, text_english comes from the KG extraction call
+                # In local mode, fall back to original text (no translation available)
+                if llm_text_english:
+                    text_english = llm_text_english
+                    language = detected_lang or language
+                else:
+                    text_english = anonymized_text
+                kg_relationships = self._extract_kg_relationships(text_english, kg_entities_raw, language)
+
+                if should_anonymize:
+                    final_kg_entities = self._anonymize_kg_entities(kg_entity_dicts)
+                    final_kg_rels = self._anonymize_kg_relationships(kg_relationships)
+                    final_participants = self._anonymize_participants(participants)
+                else:
                     final_kg_entities = kg_entity_dicts
                     final_kg_rels = kg_relationships
                     final_participants = participants
@@ -832,11 +860,12 @@ class ThreadAwareProcessor:
                 att_source_ids = [att_email_id] if att_email_id else (source_email_ids or [])
 
                 thread_chunk = ThreadChunk(
-                    chunk_id=f"att_{att_content.attachment_id}_{chunk.chunk_index}",
+                    chunk_id=self._safe_filename(f"att_{att_content.attachment_id}_{chunk.chunk_index}"),
                     thread_id=thread_id,
                     chunk_index=chunk.chunk_index,
                     text_original=chunk.text,
                     text_anonymized=anonymized_text,
+                    text_english=text_english,
                     token_count=chunk.token_count,
                     thread_subject=subject,
                     thread_participants=final_participants,
@@ -1030,23 +1059,35 @@ class ThreadAwareProcessor:
 
         # Process each email body chunk
         for chunk in text_chunks:
-            # Extract KG entities (for PathRAG) — always needed
-            kg_entity_dicts, kg_entities_raw = self._extract_kg_entities(chunk.text, language)
-            kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
-
-            # Technical thread: store cleaned text (no anonymization)
+            # Clean text (no anonymization for technical threads)
             anonymized_text = self._clean_text(chunk.text)
+
+            # Extract KG entities — in LLM mode, also returns text_english
+            kg_entity_dicts, kg_entities_raw, llm_text_english, detected_lang = \
+                self._extract_kg_entities(anonymized_text, language)
+
+            # In LLM mode, text_english comes from the KG extraction call
+            # In local mode, fall back to original text (no translation available)
+            if llm_text_english:
+                text_english = llm_text_english
+                language = detected_lang or language
+            else:
+                text_english = anonymized_text
+
+            kg_relationships = self._extract_kg_relationships(text_english, kg_entities_raw, language)
+
             final_kg_entities = kg_entity_dicts
             final_kg_rels = kg_relationships
             final_participants = thread.participants
 
             # Create thread chunk (source_type="email")
             thread_chunk = ThreadChunk(
-                chunk_id=f"{thread.conversation_id}_{chunk.chunk_index}",
+                chunk_id=self._safe_filename(f"{thread.conversation_id}_{chunk.chunk_index}"),
                 thread_id=thread.conversation_id,
                 chunk_index=chunk.chunk_index,
                 text_original=chunk.text,
                 text_anonymized=anonymized_text,
+                text_english=text_english,
                 token_count=chunk.token_count,
                 thread_subject=thread.subject,
                 thread_participants=final_participants,
@@ -1157,23 +1198,34 @@ class ThreadAwareProcessor:
 
         # Process each email body chunk
         for chunk in text_chunks:
-            # Extract KG entities (for PathRAG) — always needed
-            kg_entity_dicts, kg_entities_raw = self._extract_kg_entities(chunk.text, language)
-            kg_relationships = self._extract_kg_relationships(chunk.text, kg_entities_raw, language)
-
-            # Technical email: store cleaned text (no anonymization)
+            # Clean text (no anonymization for technical emails)
             anonymized_text = self._clean_text(chunk.text)
+
+            # Extract KG entities — in LLM mode, also returns text_english
+            kg_entity_dicts, kg_entities_raw, llm_text_english, detected_lang = \
+                self._extract_kg_entities(anonymized_text, language)
+
+            # In LLM mode, text_english comes from the KG extraction call
+            # In local mode, fall back to original text (no translation available)
+            if llm_text_english:
+                text_english = llm_text_english
+                language = detected_lang or language
+            else:
+                text_english = anonymized_text
+            kg_relationships = self._extract_kg_relationships(text_english, kg_entities_raw, language)
+
             final_kg_entities = kg_entity_dicts
             final_kg_rels = kg_relationships
             final_participants = thread.participants
 
             # Create chunk (source_type="email", stored in email_chunks)
             thread_chunk = ThreadChunk(
-                chunk_id=f"{email_record_id}_{chunk.chunk_index}",
+                chunk_id=self._safe_filename(f"{email_record_id}_{chunk.chunk_index}"),
                 thread_id=thread.conversation_id,
                 chunk_index=chunk.chunk_index,
                 text_original=chunk.text,
                 text_anonymized=anonymized_text,
+                text_english=text_english,
                 token_count=chunk.token_count,
                 thread_subject=thread.subject,
                 thread_participants=final_participants,
@@ -1681,14 +1733,14 @@ class ThreadAwareProcessor:
 
     def _save_thread_chunk(self, chunk: ThreadChunk) -> None:
         """Save thread chunk to Silver layer"""
-        chunk_file = self.silver_path / "technical" / "thread_chunks" / f"{self._safe_filename(chunk.chunk_id)}.json"
+        chunk_file = self.silver_path / "technical" / "thread_chunks" / f"{chunk.chunk_id}.json"
         chunk_file.parent.mkdir(parents=True, exist_ok=True)
         with open(chunk_file, "w", encoding="utf-8") as f:
             json.dump(chunk.to_dict(), f, indent=2, ensure_ascii=False, default=str)
 
     def _save_individual_chunk(self, chunk: ThreadChunk) -> None:
         """Save individual email chunk to Silver layer"""
-        chunk_file = self.silver_path / "technical" / "email_chunks" / f"{self._safe_filename(chunk.chunk_id)}.json"
+        chunk_file = self.silver_path / "technical" / "email_chunks" / f"{chunk.chunk_id}.json"
         chunk_file.parent.mkdir(parents=True, exist_ok=True)
         with open(chunk_file, "w", encoding="utf-8") as f:
             json.dump(chunk.to_dict(), f, indent=2, ensure_ascii=False, default=str)

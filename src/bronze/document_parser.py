@@ -333,8 +333,173 @@ class DocumentParser:
     # PDF Parser
     # =========================================================================
 
+    def _classify_pdf_page_fitz(self, page) -> dict:
+        """
+        Classify a single PDF page using PyMuPDF structural analysis.
+
+        Returns dict with:
+            type: 'digital', 'scanned', or 'hybrid'
+            text_coverage: fraction of page area covered by text
+            image_coverage: fraction of page area covered by images
+            has_fonts: whether real fonts are used (not just outlines)
+            text: extracted text (from fitz, higher quality than pypdf)
+        """
+        page_area = page.rect.width * page.rect.height
+        if page_area == 0:
+            return {"type": "scanned", "text_coverage": 0, "image_coverage": 0,
+                    "has_fonts": False, "text": ""}
+
+        # Signal 1: Text blocks with positions
+        text_dict = page.get_text("dict", flags=0)
+        text_area = 0.0
+        char_count = 0
+        has_fonts = False
+
+        for block in text_dict.get("blocks", []):
+            if block.get("type") == 0:  # text block
+                bbox = block.get("bbox", (0, 0, 0, 0))
+                block_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+                text_area += block_area
+                for line in block.get("lines", []):
+                    for span in line.get("spans", []):
+                        char_count += len(span.get("text", ""))
+                        if span.get("font", ""):
+                            has_fonts = True
+
+        text_coverage = text_area / page_area
+
+        # Signal 2: Image coverage
+        image_area = 0.0
+        images = page.get_images(full=True)
+        for img in images:
+            try:
+                xref = img[0]
+                img_rect = page.get_image_rects(xref)
+                for rect in img_rect:
+                    image_area += rect.width * rect.height
+            except Exception:
+                pass
+
+        image_coverage = image_area / page_area
+
+        # Signal 3: Extract text (fitz gives better quality than pypdf)
+        page_text = page.get_text("text") or ""
+
+        # Signal 4: Detect garbled glyph references
+        import re
+        glyph_count = len(re.findall(r'/g\d+', page_text))
+        is_garbled = len(page_text) > 0 and glyph_count > len(page_text) / 10
+
+        # Classification: combine signals
+        has_real_text = char_count > 20 and has_fonts and not is_garbled and text_coverage > 0.02
+
+        if has_real_text and image_coverage < 0.5:
+            page_type = "digital"
+        elif has_real_text and image_coverage >= 0.5:
+            page_type = "hybrid"
+        elif image_coverage > 0.3 or not has_real_text:
+            page_type = "scanned"
+        else:
+            page_type = "digital"
+
+        return {
+            "type": page_type,
+            "text_coverage": round(text_coverage, 3),
+            "image_coverage": round(image_coverage, 3),
+            "has_fonts": has_fonts,
+            "text": page_text if not is_garbled else "",
+        }
+
     def _parse_pdf(self, path: Path) -> ParsedDocument:
-        """Parse PDF document"""
+        """Parse PDF with PyMuPDF structural analysis and classification."""
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            logger.warning("PyMuPDF not installed — falling back to pypdf (no PDF classification)")
+            return self._parse_pdf_fallback(path)
+
+        doc = fitz.open(str(path))
+        pages = []
+        page_analyses = []
+        metadata = {}
+
+        # Extract metadata
+        meta = doc.metadata or {}
+        metadata = {
+            "title": meta.get("title"),
+            "author": meta.get("author"),
+            "created": meta.get("creationDate"),
+            "modified": meta.get("modDate"),
+        }
+
+        # Analyze each page
+        for i in range(len(doc)):
+            page = doc[i]
+            analysis = self._classify_pdf_page_fitz(page)
+            page_analyses.append(analysis)
+            pages.append(analysis["text"])
+
+        doc.close()
+
+        # Classify entire document
+        digital_count = sum(1 for a in page_analyses if a["type"] == "digital")
+        scanned_count = sum(1 for a in page_analyses if a["type"] == "scanned")
+        total = len(page_analyses)
+
+        if total == 0:
+            pdf_type = "scanned"
+        elif scanned_count == 0:
+            pdf_type = "digital"
+        elif digital_count == 0:
+            pdf_type = "scanned"
+        else:
+            pdf_type = "hybrid"
+
+        # Build text output based on classification
+        parse_errors = []
+        if pdf_type == "scanned":
+            logger.info(f"Scanned PDF: {path.name} ({total} pages) — needs OCR")
+            full_text = ""
+            parse_errors.append("scanned_pdf_needs_ocr")
+        elif pdf_type == "hybrid":
+            scanned_indices = [i for i, a in enumerate(page_analyses) if a["type"] == "scanned"]
+            full_text = "\n\n".join(a["text"] for a in page_analyses)
+            logger.info(f"Hybrid PDF: {path.name} — {len(scanned_indices)}/{total} pages need OCR")
+            parse_errors.append(f"hybrid_pdf_ocr_pages:{','.join(str(i) for i in scanned_indices)}")
+        else:
+            full_text = "\n\n".join(a["text"] for a in page_analyses)
+
+        # Extract tables (only for fully digital PDFs)
+        tables = []
+        if self.extract_tables and pdf_type == "digital":
+            tables = self._extract_pdf_tables(path)
+
+        # Parse dates
+        created_date = self._parse_pdf_date(metadata.get("created"))
+        modified_date = self._parse_pdf_date(metadata.get("modified"))
+
+        result = ParsedDocument(
+            doc_id="",
+            source_path="",
+            doc_type=DocumentType.PDF,
+            text=full_text,
+            pages=pages,
+            tables=tables,
+            title=metadata.get("title"),
+            author=metadata.get("author"),
+            created_date=created_date,
+            modified_date=modified_date,
+            page_count=total,
+            parse_errors=parse_errors,
+        )
+
+        if pdf_type in ("scanned", "hybrid"):
+            result.is_partially_parsed = True
+
+        return result
+
+    def _parse_pdf_fallback(self, path: Path) -> ParsedDocument:
+        """Fallback PDF parser using pypdf (no structural classification)."""
         try:
             import pypdf
         except ImportError:
@@ -345,13 +510,11 @@ class DocumentParser:
 
         text_parts = []
         pages = []
-        tables = []
         metadata = {}
 
         with open(path, "rb") as f:
             reader = pypdf.PdfReader(f)
 
-            # Extract metadata
             if reader.metadata:
                 metadata = {
                     "title": reader.metadata.get("/Title"),
@@ -360,7 +523,6 @@ class DocumentParser:
                     "modified": reader.metadata.get("/ModDate"),
                 }
 
-            # Extract text from each page
             for i, page in enumerate(reader.pages):
                 try:
                     page_text = page.extract_text() or ""
@@ -370,11 +532,10 @@ class DocumentParser:
                     logger.warning(f"Error extracting page {i}: {e}")
                     pages.append("")
 
-        # Extract tables if enabled
+        tables = []
         if self.extract_tables:
             tables = self._extract_pdf_tables(path)
 
-        # Parse dates
         created_date = self._parse_pdf_date(metadata.get("created"))
         modified_date = self._parse_pdf_date(metadata.get("modified"))
 
@@ -543,6 +704,11 @@ class DocumentParser:
 
         for sheet_name in wb.sheetnames:
             sheet = wb[sheet_name]
+
+            # Skip chart-only sheets (no cell data)
+            if not hasattr(sheet, 'iter_rows'):
+                continue
+
             sheet_text = [f"=== Sheet: {sheet_name} ==="]
             sheet_data = []
 

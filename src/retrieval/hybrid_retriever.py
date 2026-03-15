@@ -445,7 +445,7 @@ class HybridRetriever:
             if graphrag_result.metadata.get("community_summaries"):
                 extra_context += "Community insights:\n"
                 for summary in graphrag_result.metadata["community_summaries"][:2]:
-                    extra_context += f"- {summary[:200]}\n"
+                    extra_context += f"- {summary}\n"
 
             answer, is_grounded, missing_info = self._generate_answer(
                 query,
@@ -712,7 +712,7 @@ class HybridRetriever:
                     if tid in thread_ids and cid not in existing_ids:
                         sibling_chunks.append({
                             "chunk_id": cid,
-                            "text": chunk_data.get("text_anonymized", ""),
+                            "text": chunk_data.get("text_english") or chunk_data.get("text_anonymized", ""),
                             "thread_id": tid,
                             "thread_subject": chunk_data.get("thread_subject"),
                             "source_type": chunk_data.get("source_type", "email"),
@@ -831,7 +831,7 @@ class HybridRetriever:
         # Build context from chunks — label email vs attachment for LLM clarity
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
-            text = chunk.get("text", chunk.get("text_anonymized", ""))[:500]
+            text = chunk.get("text", chunk.get("text_english") or chunk.get("text_anonymized", ""))
             chunk_id = chunk.get("chunk_id", "unknown")
             thread = chunk.get("thread_subject", "")
             source_type = chunk.get("source_type", "email")
@@ -916,7 +916,7 @@ class HybridRetriever:
         # Combine chunk texts
         texts = []
         for chunk in chunks[:5]:
-            text = chunk.get("text", chunk.get("text_anonymized", ""))[:500]
+            text = chunk.get("text", chunk.get("text_english") or chunk.get("text_anonymized", ""))
             thread = chunk.get("thread_subject", "")
             if thread:
                 texts.append(f"[{thread}] {text}")
@@ -940,7 +940,7 @@ class HybridRetriever:
         # Extractive fallback: return first few chunk texts
         answer_parts = []
         for chunk in chunks[:3]:
-            text = chunk.get("text", chunk.get("text_anonymized", ""))[:300]
+            text = chunk.get("text", chunk.get("text_english") or chunk.get("text_anonymized", ""))
             thread = chunk.get("thread_subject", "")
             if thread:
                 answer_parts.append(f"**{thread}**: {text}")

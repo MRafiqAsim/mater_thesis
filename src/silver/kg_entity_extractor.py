@@ -289,9 +289,13 @@ class LLMKGExtractor(KGEntityExtractor):
             return OpenAI(api_key=self.api_key)
 
     def extract(self, text: str, language: str = "en") -> List[KGEntity]:
-        """Extract KG entities using LLM"""
+        """Extract KG entities using LLM. Also returns text_english and source_language."""
         if not self.api_key:
             return []
+
+        # Reset per-call translation fields
+        self._last_text_english = text
+        self._last_source_language = language
 
         try:
             import json
@@ -313,40 +317,61 @@ class LLMKGExtractor(KGEntityExtractor):
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0,
-                max_tokens=1000
+                max_tokens=16384
             )
 
             content = response.choices[0].message.content.strip()
 
             # Handle markdown code blocks (```json ... ```)
             if content.startswith("```"):
-                # Extract JSON from code block
                 import re
-                match = re.search(r'\[.*\]', content, re.DOTALL)
+                match = re.search(r'\{.*\}', content, re.DOTALL)
+                if not match:
+                    match = re.search(r'\[.*\]', content, re.DOTALL)
                 if match:
                     content = match.group()
 
-            # Parse JSON response
-            if content.startswith("["):
-                raw_entities = json.loads(content)
-                return [
-                    KGEntity(
-                        text=e.get("text", ""),
-                        entity_type=e.get("type", "UNKNOWN"),
-                        start=e.get("start", 0),
-                        end=e.get("end", 0),
-                        confidence=0.95,
-                        source="llm",
-                        is_pii=e.get("type") in PATHRAG_PII_ENTITY_TYPES,
-                    )
-                    for e in raw_entities
-                    if e.get("type") in self.entity_types
-                ]
+            # Parse JSON response — new format is object with entities, text_english, source_language
+            parsed = json.loads(content)
+
+            if isinstance(parsed, dict):
+                raw_entities = parsed.get("entities", [])
+                self._last_text_english = parsed.get("text_english", text)
+                self._last_source_language = parsed.get("source_language", language)
+            elif isinstance(parsed, list):
+                # Backward compatibility: old format returns array directly
+                raw_entities = parsed
+            else:
+                raw_entities = []
+
+            return [
+                KGEntity(
+                    text=e.get("text", ""),
+                    entity_type=e.get("type", "UNKNOWN"),
+                    start=e.get("start", 0),
+                    end=e.get("end", 0),
+                    confidence=0.95,
+                    source="llm",
+                    is_pii=e.get("type") in PATHRAG_PII_ENTITY_TYPES,
+                )
+                for e in raw_entities
+                if e.get("type") in self.entity_types
+            ]
 
         except Exception as e:
             logger.error(f"LLM extraction error: {e}")
 
         return []
+
+    @property
+    def last_text_english(self) -> str:
+        """English translation from the last extract() call."""
+        return getattr(self, '_last_text_english', '')
+
+    @property
+    def last_source_language(self) -> str:
+        """Detected language from the last extract() call."""
+        return getattr(self, '_last_source_language', 'en')
 
     def get_supported_languages(self) -> List[str]:
         return ["en", "nl", "de", "fr", "es", "it"]  # LLM supports many languages

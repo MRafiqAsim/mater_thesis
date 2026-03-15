@@ -52,12 +52,10 @@ STRATEGY_MAP = {
     "ReAct": RetrievalStrategy.REACT,
 }
 
-EXAMPLES = [
+FALLBACK_EXAMPLES = [
     ["What projects were discussed in the emails and who was involved?"],
-    ["What mortgage-related documents were processed?"],
-    ["Who are the main contacts and what roles do they play?"],
-    ["What compliance or regulatory topics appear in the archive?"],
     ["What technical issues were reported and how were they resolved?"],
+    ["Who are the main contacts and what roles do they play?"],
 ]
 
 
@@ -67,6 +65,100 @@ def get_retriever() -> HybridRetriever:
     if retriever is None:
         retriever = HybridRetriever(_gold_path, _silver_path, mode=_mode)
     return retriever
+
+
+def generate_examples() -> list[list[str]]:
+    """
+    Generate example questions from Gold layer data:
+    community summaries, top entities, and thread subjects.
+    Falls back to generic questions if data is unavailable.
+    """
+    examples = []
+    gold = Path(_gold_path)
+    silver = Path(_silver_path)
+
+    try:
+        # 1. Community-based questions — pick top 2 communities by entity count
+        comm_dirs = sorted(gold.glob("communities/level_*"))
+        communities = []
+        for d in comm_dirs:
+            for f in d.glob("*.json"):
+                with open(f) as fh:
+                    communities.append(json.load(fh))
+        communities.sort(key=lambda c: c.get("entity_count", 0), reverse=True)
+
+        for comm in communities[:2]:
+            summary = comm.get("summary", "")
+            key_ents = [e["name"] for e in comm.get("key_entities", [])[:3]]
+            if summary and key_ents:
+                ent_str = ", ".join(key_ents)
+                # First sentence of summary as context
+                first_sent = summary.split(".")[0].strip()
+                if len(first_sent) > 20:
+                    examples.append([f"What is the relationship between {ent_str}?"])
+
+        # 2. Entity-based questions — top ORGs and PRODUCTs by mention count
+        nodes_file = gold / "knowledge_graph" / "nodes.json"
+        if nodes_file.exists():
+            with open(nodes_file) as fh:
+                nodes = json.load(fh)
+
+            orgs = sorted(
+                [n for n in nodes.values() if n.get("node_type") == "ORG"],
+                key=lambda n: n.get("mention_count", 0), reverse=True,
+            )
+            if orgs:
+                examples.append([f"What do the emails say about {orgs[0]['name']}?"])
+
+            # Use PRODUCT or WORK_OF_ART entities, filtering out noise
+            _noise = lambda name: (
+                any(c.isdigit() for c in name[:3])
+                or "." in name or ":" in name or "@" in name
+                or len(name) < 4 or len(name) > 50
+            )
+            docs = sorted(
+                [n for n in nodes.values()
+                 if n.get("node_type") in ("PRODUCT", "WORK_OF_ART", "LAW")
+                 and not _noise(n.get("name", ""))],
+                key=lambda n: n.get("mention_count", 0), reverse=True,
+            )
+            if docs:
+                top_docs = ", ".join(d["name"] for d in docs[:3])
+                examples.append([f"What are {top_docs} and how are they used?"])
+
+            persons = sorted(
+                [n for n in nodes.values() if n.get("node_type") == "PERSON"],
+                key=lambda n: n.get("mention_count", 0), reverse=True,
+            )
+            if persons:
+                examples.append([f"What tasks or projects is {persons[0]['name']} involved in?"])
+
+        # 3. Thread-subject based question — pick a specific thread topic
+        summary_dir = silver / "technical" / "thread_summaries"
+        if summary_dir.exists():
+            summaries = []
+            for f in summary_dir.glob("*.json"):
+                with open(f) as fh:
+                    summaries.append(json.load(fh))
+            summaries.sort(key=lambda s: s.get("email_count", 0), reverse=True)
+            if summaries:
+                subj = summaries[0].get("subject", "").strip()
+                if subj:
+                    examples.append([f"Summarize the email thread about '{subj}'"])
+
+    except Exception as e:
+        logger.warning(f"Failed to generate dynamic examples: {e}")
+
+    # Deduplicate and cap at 6, fall back if empty
+    seen = set()
+    unique = []
+    for ex in examples:
+        if ex[0] not in seen:
+            seen.add(ex[0])
+            unique.append(ex)
+    examples = unique[:6]
+
+    return examples if examples else FALLBACK_EXAMPLES
 
 
 # ---------------------------------------------------------------------------
@@ -87,11 +179,12 @@ def format_sources(result: RetrievalResult) -> str:
     for i, chunk in enumerate(result.chunks[:10], 1):
         chunk_id = chunk.get("chunk_id", "?")
         thread = chunk.get("thread_subject", "")
+        source_type = chunk.get("source_type", "email")
         sim = chunk.get("similarity_score")
-        score_str = f" | score: {sim:.4f}" if sim is not None else ""
-        lines.append(f"**[{i}]** `{chunk_id}`{score_str}")
-        if thread:
-            lines.append(f"  Thread: {thread}")
+        score_str = f" | score: {sim:.3f}" if sim is not None else ""
+
+        lines.append(f"**[{i}]** {source_type} | {thread}{score_str}")
+        lines.append(f"  `{chunk_id}`")
         lines.append("")
     return "\n".join(lines)
 
@@ -332,7 +425,7 @@ def create_app() -> gr.Blocks:
                 react_output = gr.Markdown()
 
             gr.Examples(
-                examples=EXAMPLES,
+                examples=generate_examples(),
                 inputs=[question_input],
                 label="Example Questions",
             )

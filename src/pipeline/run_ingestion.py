@@ -50,6 +50,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress noisy third-party warnings
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+logging.getLogger("openpyxl").setLevel(logging.ERROR)
+
 
 def extract_pst_to_bronze(
     pst_path: str,
@@ -550,23 +554,16 @@ Examples:
             )
 
         # Print summary
-        print("\n" + "=" * 60)
-        print("SUCCESS! Bronze layer ready.")
-        print("=" * 60)
-        print(f"\n  Bronze layer:  {bronze_path}")
+        logger.info(f"Bronze layer: {bronze_path}")
         if isinstance(stats, dict):
             pst_stats = stats.get("bronze_stats", {}).get("pst", stats)
-            print(f"  Emails:        {pst_stats.get('emails_saved', pst_stats.get('success', 'N/A'))}")
+            logger.info(f"Emails: {pst_stats.get('emails_saved', pst_stats.get('success', 'N/A'))}")
             att_stats = stats.get("bronze_stats", {}).get("attachment_classification", {})
             if att_stats:
-                print(f"  Attachments:   {att_stats.get('processed', 'N/A')} processed, "
-                      f"{att_stats.get('success', 'N/A')} text extracted, "
-                      f"{att_stats.get('unsupported', 0)} unsupported format, "
-                      f"{att_stats.get('failed', 0)} failed")
-        print(f"\n  Next step (Silver):")
-        print(f"    python run_thread_processing.py --mode llm --bronze {bronze_path}")
-        print(f"\n  Then (Gold):")
-        print(f"    python run_gold_indexing.py --mode llm --all")
+                logger.info(f"Attachments: {att_stats.get('processed', 'N/A')} processed, "
+                            f"{att_stats.get('success', 'N/A')} text extracted, "
+                            f"{att_stats.get('unsupported', 0)} unsupported format, "
+                            f"{att_stats.get('failed', 0)} failed")
 
     except Exception as e:
         logger.error(f"Pipeline failed: {e}")
