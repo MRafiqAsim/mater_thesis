@@ -270,7 +270,7 @@ class DocumentParser:
                     ["libreoffice", "--headless", "--convert-to",
                      self.LEGACY_CONVERSION_MAP[ext].lstrip("."),
                      "--outdir", tmp_dir, str(path)],
-                    capture_output=True, text=True, timeout=60,
+                    capture_output=True, text=True, timeout=180,
                 )
 
                 if result.returncode != 0:
@@ -948,14 +948,27 @@ class DocumentParser:
         )
 
     def _parse_ppt(self, path: Path) -> ParsedDocument:
-        """Parse legacy PPT presentation"""
-        # Try to use pptx (sometimes works) or convert
+        """Parse legacy PPT presentation.
+
+        Tries in order:
+        1. python-pptx (works for PPTX-compatible PPT files)
+        2. LibreOffice headless conversion (.ppt → .pptx)
+        """
+        # 1. Try python-pptx
         try:
             return self._parse_pptx(path)
         except Exception:
             pass
 
-        raise RuntimeError(f"Cannot parse PPT file. Convert to PPTX format. | {path}")
+        # 2. Try LibreOffice conversion (.ppt → .pptx)
+        converted = self._convert_legacy(path)
+        if converted != path and converted.exists():
+            try:
+                return self._parse_pptx(converted)
+            except Exception as e:
+                logger.debug(f"LibreOffice-converted PPTX parsing failed: {e}")
+
+        raise RuntimeError(f"Cannot parse PPT file: {path.name}. Install LibreOffice. | {path}")
 
     # =========================================================================
     # Text-based Parsers
