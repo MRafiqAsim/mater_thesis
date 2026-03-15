@@ -460,6 +460,7 @@ class OpenAIVisionExtractor:
         Returns:
             ExtractionResult with extracted text
         """
+        file_path = Path(file_path)
         ext = file_path.suffix.lower()
 
         if ext == '.pdf':
