@@ -9,6 +9,7 @@ Processes email threads with semantic context preservation:
 5. Maintains consistent anonymization across thread
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -1152,6 +1153,8 @@ class ThreadAwareProcessor:
         )
         logger.info(f"  Email body: {len(email_text)} chars → {len(text_chunks)} chunks")
 
+        email_record_id = email.get('record_id', 'unknown')
+
         # Process each email body chunk
         for chunk in text_chunks:
             # Extract KG entities (for PathRAG) — always needed
@@ -1165,7 +1168,6 @@ class ThreadAwareProcessor:
             final_participants = thread.participants
 
             # Create chunk (source_type="email", stored in email_chunks)
-            email_record_id = email.get('record_id', 'unknown')
             thread_chunk = ThreadChunk(
                 chunk_id=f"{email_record_id}_{chunk.chunk_index}",
                 thread_id=thread.conversation_id,
@@ -1650,9 +1652,16 @@ class ThreadAwareProcessor:
         result = self.anonymizer.anonymize(participant, "en")
         return result.anonymized_text
 
+    @staticmethod
+    def _safe_filename(raw_id: str) -> str:
+        """Generate a safe filename from an ID: short hash + sanitized prefix for readability."""
+        hash_suffix = hashlib.md5(raw_id.encode()).hexdigest()[:10]
+        safe_prefix = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_id)[:60]
+        return f"{safe_prefix}_{hash_suffix}"
+
     def _save_non_technical(self, thread: EmailThread) -> None:
         """Save a non-technical thread/email to the non_technical/ folder with full Bronze data."""
-        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in thread.conversation_id)[:100]
+        safe_id = self._safe_filename(thread.conversation_id)
         out_file = self.silver_path / "non_technical" / f"{safe_id}.json"
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1672,14 +1681,14 @@ class ThreadAwareProcessor:
 
     def _save_thread_chunk(self, chunk: ThreadChunk) -> None:
         """Save thread chunk to Silver layer"""
-        chunk_file = self.silver_path / "technical" / "thread_chunks" / f"{chunk.chunk_id}.json"
+        chunk_file = self.silver_path / "technical" / "thread_chunks" / f"{self._safe_filename(chunk.chunk_id)}.json"
         chunk_file.parent.mkdir(parents=True, exist_ok=True)
         with open(chunk_file, "w", encoding="utf-8") as f:
             json.dump(chunk.to_dict(), f, indent=2, ensure_ascii=False, default=str)
 
     def _save_individual_chunk(self, chunk: ThreadChunk) -> None:
         """Save individual email chunk to Silver layer"""
-        chunk_file = self.silver_path / "technical" / "email_chunks" / f"{chunk.chunk_id}.json"
+        chunk_file = self.silver_path / "technical" / "email_chunks" / f"{self._safe_filename(chunk.chunk_id)}.json"
         chunk_file.parent.mkdir(parents=True, exist_ok=True)
         with open(chunk_file, "w", encoding="utf-8") as f:
             json.dump(chunk.to_dict(), f, indent=2, ensure_ascii=False, default=str)
@@ -1687,7 +1696,7 @@ class ThreadAwareProcessor:
     def _save_thread_summary(self, summary: ThreadSummary) -> None:
         """Save thread summary to Silver layer"""
         # Sanitize filename
-        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in summary.thread_id)[:100]
+        safe_id = self._safe_filename(summary.thread_id)
         summary_file = self.silver_path / "technical" / "thread_summaries" / f"{safe_id}.json"
         summary_file.parent.mkdir(parents=True, exist_ok=True)
         with open(summary_file, "w", encoding="utf-8") as f:

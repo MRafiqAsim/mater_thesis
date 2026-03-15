@@ -37,7 +37,11 @@ from bronze.document_parser import DocumentParser
 from bronze.bronze_loader import BronzeLayerLoader
 from bronze.attachment_processor import AttachmentProcessor
 from silver.silver_processor import SilverLayerProcessor
-from conflict_handling.pii_evaluation import PIIEvaluator, GroundTruthLoader
+try:
+    from conflict_handling.pii_evaluation import PIIEvaluator, GroundTruthLoader
+except ImportError:
+    PIIEvaluator = None
+    GroundTruthLoader = None
 
 # Configure logging
 logging.basicConfig(

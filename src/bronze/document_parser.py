@@ -7,6 +7,8 @@ and extracts text content with metadata.
 
 import hashlib
 import logging
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -132,9 +134,90 @@ class DocumentParser:
         self.ocr_enabled = ocr_enabled
         self.max_file_size = max_file_size_mb * 1024 * 1024
 
+    # Formats that msoffcrypto can handle
+    ENCRYPTABLE_EXTENSIONS = {".xls", ".xlsx", ".doc", ".docx", ".ppt", ".pptx"}
+
+    # Legacy formats that LibreOffice can convert
+    LEGACY_CONVERSION_MAP = {
+        ".ppt": ".pptx",
+        ".doc": ".docx",
+        ".xls": ".xlsx",
+    }
+
+    def _decrypt_if_needed(self, path: Path) -> Path:
+        """Decrypt Office files that use default (empty) password encryption."""
+        if path.suffix.lower() not in self.ENCRYPTABLE_EXTENSIONS:
+            return path
+
+        try:
+            import msoffcrypto
+        except ImportError:
+            return path
+
+        try:
+            with open(path, "rb") as f:
+                office_file = msoffcrypto.OfficeFile(f)
+                if not office_file.is_encrypted():
+                    return path
+
+                # Try empty password (common default encryption)
+                decrypted_path = path.with_suffix(f".decrypted{path.suffix}")
+                with open(decrypted_path, "wb") as out:
+                    office_file.load_key(password="")
+                    office_file.decrypt(out)
+
+                logger.info(f"Decrypted {path.name} (default encryption)")
+                return decrypted_path
+
+        except Exception as e:
+            logger.warning(f"Cannot decrypt {path.name}: {e}")
+            return path
+
+    def _convert_legacy(self, path: Path) -> Path:
+        """Convert legacy Office formats (.ppt, .doc, .xls) using LibreOffice headless."""
+        ext = path.suffix.lower()
+        if ext not in self.LEGACY_CONVERSION_MAP:
+            return path
+
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                result = subprocess.run(
+                    ["libreoffice", "--headless", "--convert-to",
+                     self.LEGACY_CONVERSION_MAP[ext].lstrip("."),
+                     "--outdir", tmp_dir, str(path)],
+                    capture_output=True, text=True, timeout=60,
+                )
+
+                if result.returncode != 0:
+                    logger.debug(f"LibreOffice conversion failed for {path.name}: {result.stderr}")
+                    return path
+
+                # Find converted file
+                new_ext = self.LEGACY_CONVERSION_MAP[ext]
+                converted = list(Path(tmp_dir).glob(f"*{new_ext}"))
+                if not converted:
+                    return path
+
+                # Move converted file next to original
+                output_path = path.with_suffix(new_ext)
+                converted[0].rename(output_path)
+                logger.info(f"Converted {path.name} → {output_path.name}")
+                return output_path
+
+        except FileNotFoundError:
+            logger.debug("LibreOffice not installed — skipping legacy conversion")
+            return path
+        except Exception as e:
+            logger.debug(f"Legacy conversion failed for {path.name}: {e}")
+            return path
+
     def parse(self, file_path: Union[str, Path]) -> ParsedDocument:
         """
         Parse a document file.
+
+        Pre-processes the file if needed:
+        1. Decrypt Office files with default (empty) password
+        2. Convert legacy formats (.ppt, .doc, .xls) via LibreOffice
 
         Args:
             file_path: Path to the document
@@ -143,6 +226,7 @@ class DocumentParser:
             ParsedDocument with extracted content
         """
         path = Path(file_path)
+        original_path = path
 
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
@@ -152,11 +236,15 @@ class DocumentParser:
         if file_size > self.max_file_size:
             raise ValueError(f"File too large: {file_size / 1024 / 1024:.1f} MB")
 
-        # Determine document type
+        # Pre-process: decrypt if needed, then convert legacy formats
+        path = self._decrypt_if_needed(path)
+        path = self._convert_legacy(path)
+
+        # Determine document type (from potentially converted file)
         doc_type = self._detect_type(path)
 
-        # Generate document ID
-        doc_id = self._generate_id(path)
+        # Generate document ID (from original path for consistency)
+        doc_id = self._generate_id(original_path)
 
         # Parse based on type
         parser_map = {
@@ -178,17 +266,17 @@ class DocumentParser:
         try:
             result = parser(path)
             result.doc_id = doc_id
-            result.source_path = str(path)
-            result.doc_type = doc_type
+            result.source_path = str(original_path)
+            result.doc_type = self._detect_type(original_path)
             return result
 
         except Exception as e:
-            logger.error(f"Error parsing {path}: {e}")
+            logger.error(f"Error parsing {original_path}: {e}")
             # Return partial result
             return ParsedDocument(
                 doc_id=doc_id,
-                source_path=str(path),
-                doc_type=doc_type,
+                source_path=str(original_path),
+                doc_type=self._detect_type(original_path),
                 text="",
                 parse_errors=[str(e)],
                 is_partially_parsed=True

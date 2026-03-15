@@ -162,10 +162,7 @@ class SemanticChunker:
         # Convert to Chunk objects with metadata
         result = []
         for i, (chunk_text, start, end) in enumerate(chunks):
-            # Skip chunks that are too small
             token_count = self._count_tokens(chunk_text)
-            if token_count < self.min_chunk_size:
-                continue
 
             # Generate chunk ID
             chunk_id = self._generate_chunk_id(doc_id, i, chunk_text)

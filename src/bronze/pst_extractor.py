@@ -633,20 +633,14 @@ class PSTExtractor:
             if num_attachments == 0:
                 return attachments
 
+            logger.info(f"Processing {num_attachments} attachments")
+
             for i in range(num_attachments):
                 try:
                     att = message.get_attachment(i)
 
                     # Get filename from record sets (MAPI property 12289 = PR_ATTACH_FILENAME)
                     filename = self._get_attachment_filename(att, i)
-
-                    # Get size
-                    size = att.size if hasattr(att, 'size') else 0
-
-                    # Check size limit
-                    if size > self.max_attachment_size:
-                        logger.debug(f"Skipping large attachment: {filename} ({size} bytes)")
-                        continue
 
                     # Check file type
                     ext = Path(filename).suffix.lower()
@@ -656,11 +650,34 @@ class PSTExtractor:
                             logger.debug(f"Skipping unsupported attachment type: {filename}")
                             continue
 
-                    # Read content
+                    # Get size — try multiple pypff attributes
+                    size = 0
+                    for size_attr in ('size', 'get_size'):
+                        if hasattr(att, size_attr):
+                            val = getattr(att, size_attr)
+                            size = val() if callable(val) else val
+                            if size and size > 0:
+                                break
+
+                    # Check size limit
+                    if size > self.max_attachment_size:
+                        logger.debug(f"Skipping large attachment: {filename} ({size} bytes)")
+                        continue
+
+                    # Read content — try read_buffer with size, then without
                     content = b""
-                    if hasattr(att, 'read_buffer') and size > 0:
+                    if hasattr(att, 'read_buffer'):
                         try:
-                            content = att.read_buffer(size)
+                            if size > 0:
+                                content = att.read_buffer(size)
+                            else:
+                                content = att.read_buffer()
+                        except TypeError:
+                            # read_buffer() might not accept args — try alternate
+                            try:
+                                content = att.read_buffer()
+                            except Exception as e2:
+                                logger.debug(f"read_buffer() fallback failed: {e2}")
                         except Exception as e:
                             logger.debug(f"read_buffer failed: {e}")
 
