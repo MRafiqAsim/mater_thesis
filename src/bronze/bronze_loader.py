@@ -12,10 +12,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Union, Iterator
 
+import ftfy
+
 from .pst_extractor import EmailMessage
 from .document_parser import ParsedDocument
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_strings(obj: Any) -> Any:
+    """Recursively apply ftfy.fix_text to every string in a nested structure."""
+    if isinstance(obj, str):
+        return ftfy.fix_text(obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_strings(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_strings(v) for v in obj]
+    return obj
 
 
 class BronzeLayerLoader:
@@ -115,12 +128,9 @@ class BronzeLayerLoader:
             # Save email as JSON
             email_path = email_dir / f"{email.message_id}.json"
 
-            email_data = email.to_dict()
+            email_data = _sanitize_strings(email.to_dict())
 
             if self.storage_type == "local":
-                # Serialize to string first so a failed encode never leaves a
-                # truncated file on disk (the old streaming json.dump could
-                # flush partial content before hitting a problematic character).
                 json_str = json.dumps(email_data, indent=2, ensure_ascii=False, default=str)
                 with open(email_path, "w", encoding="utf-8") as f:
                     f.write(json_str)
@@ -197,7 +207,8 @@ class BronzeLayerLoader:
             doc_path = doc_dir / f"{document.doc_id}.json"
 
             doc_data = document.to_dict()
-            doc_data["text"] = document.text  # Include full text
+            doc_data["text"] = document.text
+            doc_data = _sanitize_strings(doc_data)
 
             if self.storage_type == "local":
                 json_str = json.dumps(doc_data, indent=2, ensure_ascii=False, default=str)
