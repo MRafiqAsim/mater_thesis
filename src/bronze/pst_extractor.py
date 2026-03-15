@@ -8,7 +8,10 @@ Handles 35 years of email archives with proper encoding and error handling.
 import os
 import hashlib
 import logging
+import re
 import uuid
+
+import ftfy
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -589,25 +592,32 @@ class PSTExtractor:
         return recipients
 
     def _decode_body(self, body: Any) -> str:
-        """Decode email body handling various encodings"""
+        """Decode email body handling various encodings.
+
+        Uses ftfy to fix mojibake, lone surrogates, null bytes, and
+        control characters that would break JSON serialization.
+        """
         if body is None:
             return ""
 
         if isinstance(body, str):
-            return body
-
-        if isinstance(body, bytes):
+            text = body
+        elif isinstance(body, bytes):
+            text = None
             # Try common encodings
             for encoding in ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']:
                 try:
-                    return body.decode(encoding)
+                    text = body.decode(encoding)
+                    break
                 except (UnicodeDecodeError, AttributeError):
                     continue
 
-            # Fallback: decode with replacement
-            return body.decode('utf-8', errors='replace')
+            if text is None:
+                text = body.decode('utf-8', errors='replace')
+        else:
+            text = str(body)
 
-        return str(body)
+        return ftfy.fix_text(text)
 
     def _html_to_text(self, html: str) -> str:
         """Convert HTML to plain text"""

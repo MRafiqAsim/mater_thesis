@@ -118,8 +118,12 @@ class BronzeLayerLoader:
             email_data = email.to_dict()
 
             if self.storage_type == "local":
+                # Serialize to string first so a failed encode never leaves a
+                # truncated file on disk (the old streaming json.dump could
+                # flush partial content before hitting a problematic character).
+                json_str = json.dumps(email_data, indent=2, ensure_ascii=False, default=str)
                 with open(email_path, "w", encoding="utf-8") as f:
-                    json.dump(email_data, f, indent=2, ensure_ascii=False, default=str)
+                    f.write(json_str)
             else:
                 self._write_to_azure(str(email_path), json.dumps(email_data, default=str))
 
@@ -196,8 +200,9 @@ class BronzeLayerLoader:
             doc_data["text"] = document.text  # Include full text
 
             if self.storage_type == "local":
+                json_str = json.dumps(doc_data, indent=2, ensure_ascii=False, default=str)
                 with open(doc_path, "w", encoding="utf-8") as f:
-                    json.dump(doc_data, f, indent=2, ensure_ascii=False, default=str)
+                    f.write(json_str)
             else:
                 self._write_to_azure(str(doc_path), json.dumps(doc_data, default=str))
 
