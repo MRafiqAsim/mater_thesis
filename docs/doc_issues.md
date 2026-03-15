@@ -107,11 +107,17 @@ Classification result per page: `digital`, `scanned`, or `hybrid`. Scanned PDFs 
 
 **Symptom**: Bronze email JSON files are truncated mid-field. The file ends at `"email_body_text":` with no value — valid JSON up to that point, then nothing. File size is smaller than expected.
 
-**Root Cause**: Lone surrogate characters (U+D800–U+DFFF) in email body text. These appear when PST email bodies encoded in UTF-16 or mixed encodings are decoded through `latin-1` (which never raises an error but can produce invalid Unicode codepoints). The old code used `json.dump()` streaming directly to file with `ensure_ascii=False`. When the UTF-8 file writer hit a lone surrogate, it crashed — but the file handle had already flushed partial content to disk, leaving a truncated JSON file.
+**Root Cause**: Lone surrogate characters (U+D800–U+DFFF) in email text. These appear when PST email bodies or headers encoded in UTF-16 or mixed encodings are decoded through `latin-1` (which never raises an error but can produce invalid Unicode codepoints). The old code used `json.dump()` streaming directly to file with `ensure_ascii=False`. When the UTF-8 file writer hit a lone surrogate, it crashed — but the file handle had already flushed partial content to disk, leaving a truncated JSON file.
 
 **Reproduction**: `json.dump({"a": "before", "body": "hello\ud800world"}, f, ensure_ascii=False)` writes `{"a": "before", "body": ` then crashes with `UnicodeEncodeError: 'utf-8' codec can't encode character '\ud800'`. The file is left with 24 bytes of valid-looking but incomplete JSON.
 
-**Fix (two layers)**:
+**Affected fields**: Surrogates can appear in **any** string field, not just `email_body_text`:
+- `subject` — CJK (Chinese/Japanese/Korean) email subjects with encoding mismatches
+- `folder_path` — Outlook folder names in non-ASCII languages
+- `sender` / recipient names — international names with mixed encodings
+- Attachment filenames — e.g. `酸洗线索赔函20230519.docx`, `6.2邮件回复20230613.docx`
+
+**Fix (three layers)**:
 
 1. **`pst_extractor.py` — `_decode_body()`**: Replaced manual sanitization with `ftfy.fix_text()` which handles all problematic characters in one call:
    - Lone surrogates (U+D800–U+DFFF) → replaced with `�`
@@ -120,7 +126,11 @@ Classification result per page: `digital`, `scanned`, or `hybrid`. Scanned PDFs 
    - Mojibake (e.g. `cafÃ©` → `café`) → fixed automatically
    - This is especially valuable for Dutch emails decoded with the wrong charset
 
-2. **`bronze_loader.py` — `load_email()` / `load_document()`**: Changed from `json.dump(data, file)` to `json.dumps(data)` → `file.write(str)`. If serialization fails, the exception is raised *before* any file is created — no more truncated files on disk.
+2. **`bronze_loader.py` — `_sanitize_strings()`**: Recursive function that applies `ftfy.fix_text()` to **every string** in the entire email/document dict before serialization. This catches surrogates in subject, folder_path, sender, recipient names, attachment filenames — any field, at any nesting depth.
+
+3. **`bronze_loader.py` — `load_email()` / `load_document()`**: Changed from `json.dump(data, file)` to `json.dumps(data)` → `file.write(str)`. If serialization fails, the exception is raised *before* any file is created — no more truncated files on disk.
+
+**Safety**: `ftfy` is used by Mozilla, spaCy, and Hugging Face. It only changes text that is already broken (mojibake, surrogates, control chars). Normal text in any language (Dutch, Chinese, English, etc.), email addresses, URLs, IBANs, phone numbers, and dates pass through unchanged.
 
 **Impact**: Existing broken files must be re-ingested (re-run Bronze pipeline). The Silver pipeline already gracefully skips broken JSON files with a warning — no crash or data loss.
 
