@@ -1186,8 +1186,8 @@ class RetrievalToolkit:
                                     .replace("{source_text}", source_text)
                             }
                         ],
-                        temperature=get_prompt("retrieval", "graphrag_global_map", "temperature", 0.0),
-                        max_tokens=get_prompt("retrieval", "graphrag_global_map", "max_tokens", 500),
+                        temperature=get_prompt("retrieval", "graphrag_global_map", "temperature"),
+                        max_tokens=get_prompt("retrieval", "graphrag_global_map", "max_tokens"),
                     )
 
                     content = response.choices[0].message.content.strip()
@@ -1263,8 +1263,8 @@ class RetrievalToolkit:
                             .replace("{points}", points_text)
                     }
                 ],
-                temperature=get_prompt("retrieval", "graphrag_global_reduce", "temperature", 0.3),
-                max_tokens=get_prompt("retrieval", "graphrag_global_reduce", "max_tokens", 1500),
+                temperature=get_prompt("retrieval", "graphrag_global_reduce", "temperature"),
+                max_tokens=get_prompt("retrieval", "graphrag_global_reduce", "max_tokens"),
             )
 
             answer = reduce_response.choices[0].message.content.strip()
@@ -1434,8 +1434,8 @@ class RetrievalToolkit:
                             .replace("{source_text}", source_text)
                     }
                 ],
-                temperature=get_prompt("retrieval", "graphrag_local", "temperature", 0.3),
-                max_tokens=get_prompt("retrieval", "graphrag_local", "max_tokens", 1000),
+                temperature=get_prompt("retrieval", "graphrag_local", "temperature"),
+                max_tokens=get_prompt("retrieval", "graphrag_local", "max_tokens"),
             )
 
             answer = response.choices[0].message.content.strip()

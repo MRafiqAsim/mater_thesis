@@ -255,7 +255,7 @@ class ReActRetriever:
 
         # Build system prompt from config/prompts.json
         system_prompt = format_prompt(
-            get_prompt("retrieval", "react_agent", "system_prompt", "You are a retrieval agent."),
+            get_prompt("retrieval", "react_agent", "system_prompt"),
             tool_descriptions=self._build_tool_descriptions()
         )
 
@@ -483,10 +483,8 @@ class ReActRetriever:
                     context_parts.append(f"[Step {i} — Evidence]: {step.observation}")
             context = "\n\n---\n\n".join(context_parts)
 
-            fallback_sys = get_prompt("retrieval", "react_agent", "fallback_system_prompt",
-                "You are a knowledge retrieval expert synthesizing evidence from an enterprise email archive.")
-            fallback_user = get_prompt("retrieval", "react_agent", "fallback_user_prompt",
-                "Context:\n{context}\n\nQuestion: {question}\n\nProvide a comprehensive, detailed answer based on the evidence above.")
+            fallback_sys = get_prompt("retrieval", "react_agent", "fallback_system_prompt")
+            fallback_user = get_prompt("retrieval", "react_agent", "fallback_user_prompt")
             try:
                 response = self.client.chat.completions.create(
                     model=self.config.model,
@@ -496,8 +494,8 @@ class ReActRetriever:
                             context=context, question=question
                         )},
                     ],
-                    temperature=get_prompt("retrieval", "react_agent", "temperature", 0.3),
-                    max_tokens=get_prompt("retrieval", "react_agent", "max_tokens", 2000),
+                    temperature=get_prompt("retrieval", "react_agent", "temperature"),
+                    max_tokens=get_prompt("retrieval", "react_agent", "max_tokens"),
                 )
                 return response.choices[0].message.content or ""
             except Exception as e:

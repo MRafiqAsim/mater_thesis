@@ -850,9 +850,9 @@ class HybridRetriever:
             context = f"{extra_context}\n\n---\n\nEvidence:\n{context}"
 
         # Format prompts from config/prompts.json
-        system_prompt = get_prompt("retrieval", "generation", "system_prompt", "You are a helpful assistant.")
+        system_prompt = get_prompt("retrieval", "generation", "system_prompt")
         user_prompt = format_prompt(
-            get_prompt("retrieval", "generation", "user_prompt", "Context:\n{context}\n\nQuestion: {question}"),
+            get_prompt("retrieval", "generation", "user_prompt"),
             context=context,
             question=query,
         )
@@ -864,8 +864,8 @@ class HybridRetriever:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=get_prompt("retrieval", "generation", "temperature", 0.3),
-                max_tokens=get_prompt("retrieval", "generation", "max_tokens", 1000),
+                temperature=get_prompt("retrieval", "generation", "temperature"),
+                max_tokens=get_prompt("retrieval", "generation", "max_tokens"),
             )
             answer = response.choices[0].message.content or ""
         except Exception as e:
