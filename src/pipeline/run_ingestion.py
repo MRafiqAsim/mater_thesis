@@ -43,11 +43,17 @@ except ImportError:
     PIIEvaluator = None
     GroundTruthLoader = None
 
-# Configure logging
+# Configure logging — console + file
+_log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format=_log_format,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("logs/ingestion.log", mode="a", encoding="utf-8"),
+    ],
 )
+Path("logs").mkdir(exist_ok=True)
 logger = logging.getLogger(__name__)
 
 # Suppress noisy third-party warnings

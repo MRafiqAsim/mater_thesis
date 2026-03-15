@@ -42,10 +42,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from silver.thread_aware_processor import ThreadAwareProcessor
 from silver.identity_registry import IdentityRegistry
 
-# Configure logging
+# Configure logging — console + file
+from pathlib import Path as _Path
+_Path("logs").mkdir(exist_ok=True)
+_log_format = '%(asctime)s - %(levelname)s - %(message)s'
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format=_log_format,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("logs/silver.log", mode="a", encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 
