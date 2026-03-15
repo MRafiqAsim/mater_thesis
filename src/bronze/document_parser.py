@@ -747,8 +747,7 @@ class DocumentParser:
         Tries in order:
         1. python-docx (works for DOCX-compatible DOC files)
         2. antiword (reliable for legacy binary DOC)
-
-        antiword install: brew install antiword (mac) | apt install antiword (linux)
+        3. LibreOffice headless conversion (.doc → .docx)
         """
         # 1. Try python-docx
         try:
@@ -771,11 +770,19 @@ class DocumentParser:
                     text=result.stdout.strip(),
                 )
         except FileNotFoundError:
-            logger.warning("antiword not installed. Install: brew install antiword (mac) | apt install antiword (linux)")
+            logger.debug("antiword not installed, trying LibreOffice")
         except Exception as e:
             logger.debug(f"antiword DOC parsing failed: {e}")
 
-        raise RuntimeError(f"Cannot parse DOC file: {path.name}. Install antiword.")
+        # 3. Try LibreOffice conversion (.doc → .docx)
+        converted = self._convert_legacy(path)
+        if converted != path and converted.exists():
+            try:
+                return self._parse_docx(converted)
+            except Exception as e:
+                logger.debug(f"LibreOffice-converted DOCX parsing failed: {e}")
+
+        raise RuntimeError(f"Cannot parse DOC file: {path.name}. Install antiword or LibreOffice.")
 
     # =========================================================================
     # Excel Parser
