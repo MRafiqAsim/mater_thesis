@@ -270,7 +270,7 @@ class DocumentParser:
                     ["libreoffice", "--headless", "--convert-to",
                      self.LEGACY_CONVERSION_MAP[ext].lstrip("."),
                      "--outdir", tmp_dir, str(path)],
-                    capture_output=True, text=True, timeout=180,
+                    capture_output=True, text=True, timeout=60,
                 )
 
                 if result.returncode != 0:
