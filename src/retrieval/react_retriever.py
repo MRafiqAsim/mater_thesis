@@ -392,26 +392,38 @@ class ReActRetriever:
             return result_text
 
         elif isinstance(data, dict):
-            # For global_search / local_search, pass full answer to agent
+            # For global_search / local_search, pass BOTH the synthesized answer
+            # AND the raw evidence points so the agent can build a richer answer
             if "answer" in data and tool_result.tool_name in ("global_search", "local_search"):
-                answer = data["answer"]
-                meta_parts = []
-                for k, v in data.items():
-                    if k == "answer":
-                        continue
-                    if isinstance(v, list):
-                        meta_parts.append(f"{k}: [{len(v)} items]")
-                    else:
-                        meta_parts.append(f"{k}: {v}")
-                meta = " | ".join(meta_parts)
-                return f"Answer: {answer}\n\nMetadata: {meta}" if meta else f"Answer: {answer}"
+                parts = [f"Synthesized Answer:\n{data['answer']}"]
 
-            # Format full result
+                # Include raw scored points — the agent should use these
+                # to add specificity beyond the pre-synthesized answer
+                if "points" in data and isinstance(data["points"], list):
+                    points_text = "\n".join(
+                        f"  [{p.get('score', '')}] {p.get('point', '')}"
+                        for p in data["points"]
+                    )
+                    parts.append(f"\nKey Evidence Points:\n{points_text}")
+
+                # Include entity/relationship context for local_search
+                for ctx_key in ("entities", "relationships", "community_reports", "source_text"):
+                    if ctx_key in data and data[ctx_key]:
+                        parts.append(f"\n{ctx_key.replace('_', ' ').title()}:\n{data[ctx_key]}")
+
+                return "\n\n".join(parts)
+
+            # Format full result — show all data
             parts = []
             for key, value in data.items():
                 if isinstance(value, list):
-                    value = f"[{len(value)} items]"
-                parts.append(f"{key}: {value}")
+                    if value and isinstance(value[0], dict):
+                        items = "\n".join(f"  - {json.dumps(v)}" for v in value[:20])
+                        parts.append(f"{key}:\n{items}")
+                    else:
+                        parts.append(f"{key}: {value}")
+                else:
+                    parts.append(f"{key}: {value}")
             return "\n".join(parts)
 
         return str(data)

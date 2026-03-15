@@ -1446,6 +1446,10 @@ class RetrievalToolkit:
                 success=True,
                 data={
                     "answer": answer,
+                    "entities": entities_text,
+                    "relationships": relationships_text,
+                    "community_reports": community_text,
+                    "source_text": source_text,
                     "source_chunk_ids": list(source_chunk_ids)[:20],
                     "entity_count": len(entity_ids),
                     "relationship_count": len(relationships_text_parts),
