@@ -144,6 +144,91 @@ class DocumentParser:
         ".xls": ".xlsx",
     }
 
+    # Magic byte signatures for file type detection
+    MAGIC_SIGNATURES = [
+        (b"%PDF", ".pdf"),
+        (b"PK\x03\x04", ".docx"),      # ZIP-based (DOCX/XLSX/PPTX — refined below)
+        (b"\xd0\xcf\x11\xe0", ".msg"),  # OLE2 Compound Document (MSG/DOC/XLS/PPT)
+        (b"{\\rtf", ".rtf"),
+        (b"<html", ".html"),
+        (b"<!DOCTYPE html", ".html"),
+        (b"\x89PNG", ".png"),
+        (b"\xff\xd8\xff", ".jpg"),
+        (b"GIF8", ".gif"),
+    ]
+
+    def _detect_extensionless(self, path: Path) -> Path:
+        """Detect file type from magic bytes for files without extensions."""
+        if path.suffix:
+            return path  # Already has an extension
+
+        try:
+            with open(path, "rb") as f:
+                header = f.read(32)
+        except Exception:
+            return path
+
+        if not header:
+            return path
+
+        detected_ext = None
+        for magic, ext in self.MAGIC_SIGNATURES:
+            if header.startswith(magic):
+                detected_ext = ext
+                break
+
+        if not detected_ext:
+            logger.info(f"Skipping extensionless file (unknown type): {path.name} | {path}")
+            return path
+
+        # Refine ZIP-based formats by checking internal content
+        if detected_ext == ".docx":
+            try:
+                import zipfile
+                with zipfile.ZipFile(path) as zf:
+                    names = zf.namelist()
+                    if any("word/" in n for n in names):
+                        detected_ext = ".docx"
+                    elif any("xl/" in n for n in names):
+                        detected_ext = ".xlsx"
+                    elif any("ppt/" in n for n in names):
+                        detected_ext = ".pptx"
+            except Exception:
+                pass
+
+        # Refine OLE2: MSG vs DOC/XLS/PPT
+        if detected_ext == ".msg":
+            try:
+                import olefile
+                if olefile.isOleFile(str(path)):
+                    ole = olefile.OleFileIO(str(path))
+                    streams = ole.listdir()
+                    flat = ["/".join(s) for s in streams]
+                    ole.close()
+                    if any("__substg" in f.lower() for f in flat):
+                        detected_ext = ".msg"  # Outlook message
+                    elif any("worddocument" in f.lower() for f in flat):
+                        detected_ext = ".doc"
+                    elif any("workbook" in f.lower() for f in flat):
+                        detected_ext = ".xls"
+                    elif any("powerpoint" in f.lower() for f in flat):
+                        detected_ext = ".ppt"
+            except ImportError:
+                pass  # olefile not installed — keep .msg as default for OLE2
+            except Exception:
+                pass
+
+        # Rename file with detected extension
+        new_path = path.with_suffix(detected_ext)
+        try:
+            import shutil
+            shutil.copy2(str(path), str(new_path))
+            logger.info(f"Detected extensionless file as {detected_ext}: {path.name} → {new_path.name} | {path}")
+            return new_path
+        except Exception as e:
+            logger.warning(f"Failed to rename extensionless file {path.name}: {e}")
+            return path
+
     def _decrypt_if_needed(self, path: Path) -> Path:
         """Decrypt Office files that use default (empty) password encryption."""
         if path.suffix.lower() not in self.ENCRYPTABLE_EXTENSIONS:
@@ -236,7 +321,13 @@ class DocumentParser:
         if file_size > self.max_file_size:
             raise ValueError(f"File too large: {file_size / 1024 / 1024:.1f} MB")
 
-        # Pre-process: decrypt if needed, then convert legacy formats
+        # Pre-process: detect type for extensionless files, decrypt, convert legacy
+        path = self._detect_extensionless(path)
+
+        # Parse embedded email attachments (.msg)
+        if path.suffix.lower() == ".msg":
+            return self._parse_msg(path, original_path)
+
         path = self._decrypt_if_needed(path)
         path = self._convert_legacy(path)
 
@@ -963,6 +1054,65 @@ class DocumentParser:
             title=title,
             page_count=1,
         )
+
+    def _parse_msg(self, path: Path, original_path: Path = None) -> ParsedDocument:
+        """Parse Outlook .msg embedded email attachment."""
+        original_path = original_path or path
+        doc_id = self._generate_id(original_path)
+
+        try:
+            import extract_msg
+
+            msg = extract_msg.Message(str(path))
+
+            # Build text from email fields
+            parts = []
+            if msg.subject:
+                parts.append(f"Subject: {msg.subject}")
+            if msg.sender:
+                parts.append(f"From: {msg.sender}")
+            if msg.to:
+                parts.append(f"To: {msg.to}")
+            if msg.date:
+                parts.append(f"Date: {msg.date}")
+            parts.append("")  # blank line separator
+
+            # Body: prefer plain text, fall back to HTML
+            body = msg.body or ""
+            if not body.strip() and msg.htmlBody:
+                try:
+                    from bs4 import BeautifulSoup
+                    body = BeautifulSoup(msg.htmlBody, "html.parser").get_text(separator="\n")
+                except ImportError:
+                    import re
+                    body = re.sub(r'<[^>]+>', ' ', msg.htmlBody.decode("utf-8", errors="replace"))
+
+            parts.append(body)
+            text = "\n".join(parts).strip()
+
+            msg.close()
+
+            logger.info(f"Parsed embedded email: {original_path.name} ({len(text)} chars) | {path}")
+
+            return ParsedDocument(
+                doc_id=doc_id,
+                source_path=str(original_path),
+                doc_type=DocumentType.UNKNOWN,
+                text=text,
+                title=msg.subject if msg.subject else original_path.name,
+                page_count=1,
+                metadata={"source_format": "msg", "embedded_email": True},
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to parse MSG file: {original_path.name}: {e} | {path}")
+            return ParsedDocument(
+                doc_id=doc_id,
+                source_path=str(original_path),
+                doc_type=DocumentType.UNKNOWN,
+                text="",
+                parse_errors=[f"msg_parse_error: {e}"],
+            )
 
 
 # Convenience function
