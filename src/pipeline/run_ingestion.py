@@ -44,16 +44,18 @@ except ImportError:
     GroundTruthLoader = None
 
 # Configure logging — console + file
+_project_root = Path(__file__).resolve().parent.parent.parent
+_log_dir = _project_root / "logs"
+_log_dir.mkdir(exist_ok=True)
 _log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 logging.basicConfig(
     level=logging.INFO,
     format=_log_format,
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("logs/ingestion.log", mode="a", encoding="utf-8"),
+        logging.FileHandler(str(_log_dir / "ingestion.log"), mode="a", encoding="utf-8"),
     ],
 )
-Path("logs").mkdir(exist_ok=True)
 logger = logging.getLogger(__name__)
 
 # Suppress noisy third-party warnings

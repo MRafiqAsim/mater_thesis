@@ -26,14 +26,16 @@ from gold.path_indexer import PathIndexer, PathIndexConfig
 from gold.embedding_generator import EmbeddingGenerator, EmbeddingConfig
 
 from pathlib import Path as _Path
-_Path("logs").mkdir(exist_ok=True)
+_project_root = _Path(__file__).resolve().parent.parent.parent
+_log_dir = _project_root / "logs"
+_log_dir.mkdir(exist_ok=True)
 _log_format = '%(asctime)s - %(levelname)s - %(message)s'
 logging.basicConfig(
     level=logging.INFO,
     format=_log_format,
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("logs/gold.log", mode="a", encoding="utf-8"),
+        logging.FileHandler(str(_log_dir / "gold.log"), mode="a", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger(__name__)
