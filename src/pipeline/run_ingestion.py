@@ -53,6 +53,9 @@ logger = logging.getLogger(__name__)
 # Suppress noisy third-party warnings
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 logging.getLogger("openpyxl").setLevel(logging.ERROR)
+logging.getLogger("fitz").setLevel(logging.ERROR)   # MuPDF/PyMuPDF
+import warnings
+warnings.filterwarnings("ignore", message="Sparkline Group extension")
 
 
 def extract_pst_to_bronze(

@@ -189,7 +189,7 @@ class DocumentParser:
                 )
 
                 if result.returncode != 0:
-                    logger.debug(f"LibreOffice conversion failed for {path.name}: {result.stderr}")
+                    logger.warning(f"LibreOffice conversion failed for {path.name}: {result.stderr.strip()}")
                     return path
 
                 # Find converted file
@@ -205,10 +205,10 @@ class DocumentParser:
                 return output_path
 
         except FileNotFoundError:
-            logger.debug("LibreOffice not installed — skipping legacy conversion")
+            logger.warning("LibreOffice not installed — skipping legacy conversion")
             return path
         except Exception as e:
-            logger.debug(f"Legacy conversion failed for {path.name}: {e}")
+            logger.warning(f"Legacy conversion failed for {path.name}: {e}")
             return path
 
     def parse(self, file_path: Union[str, Path]) -> ParsedDocument:
@@ -458,13 +458,13 @@ class DocumentParser:
         # Build text output based on classification
         parse_errors = []
         if pdf_type == "scanned":
-            logger.info(f"Scanned PDF: {path.name} ({total} pages) — needs OCR")
+            logger.info(f"Scanned PDF: {path.name} ({total} pages) — needs OCR | {path}")
             full_text = ""
             parse_errors.append("scanned_pdf_needs_ocr")
         elif pdf_type == "hybrid":
             scanned_indices = [i for i, a in enumerate(page_analyses) if a["type"] == "scanned"]
             full_text = "\n\n".join(a["text"] for a in page_analyses)
-            logger.info(f"Hybrid PDF: {path.name} — {len(scanned_indices)}/{total} pages need OCR")
+            logger.info(f"Hybrid PDF: {path.name} — {len(scanned_indices)}/{total} pages need OCR | {path}")
             parse_errors.append(f"hybrid_pdf_ocr_pages:{','.join(str(i) for i in scanned_indices)}")
         else:
             full_text = "\n\n".join(a["text"] for a in page_analyses)
@@ -857,7 +857,7 @@ class DocumentParser:
         except Exception:
             pass
 
-        raise RuntimeError("Cannot parse PPT file. Convert to PPTX format.")
+        raise RuntimeError(f"Cannot parse PPT file. Convert to PPTX format. | {path}")
 
     # =========================================================================
     # Text-based Parsers
