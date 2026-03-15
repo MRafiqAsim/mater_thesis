@@ -736,14 +736,24 @@ class ThreadAwareProcessor:
         for att_content in attachment_contents:
             # 1. Vision OCR: scanned PDF with empty text → extract via GPT-4o Vision
             #    (Thread is already classified as technical — we're only here for technical threads)
-            if att_content.doc_type == "pdf" and not att_content.text.strip() and self.vision_extractor:
+            is_pdf = att_content.doc_type == "pdf"
+            has_no_text = not att_content.text.strip()
+            if is_pdf:
+                logger.info(
+                    f"PDF attachment: '{att_content.filename}' | "
+                    f"text_len={len(att_content.text)} | empty={has_no_text} | "
+                    f"vision_available={self.vision_extractor is not None}"
+                )
+            if is_pdf and has_no_text and self.vision_extractor:
                 file_path = None
                 if self.attachment_processor:
                     file_path = self.attachment_processor.find_attachment_file(
                         att_content.attachment_id, att_content.filename
                     )
                 if file_path:
-                    logger.info(f"Scanned PDF detected: '{att_content.filename}' — running Vision OCR")
+                    logger.info(f"Scanned PDF detected: '{att_content.filename}' — running Vision OCR | {file_path}")
+                else:
+                    logger.warning(f"Scanned PDF '{att_content.filename}' — file not found on disk, cannot run Vision OCR")
                     vision_result = self.vision_extractor.extract(
                         file_path=file_path,
                         attachment_id=att_content.attachment_id,
