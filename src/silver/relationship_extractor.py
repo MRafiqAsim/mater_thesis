@@ -237,7 +237,7 @@ class LLMRelationshipExtractor(RelationshipExtractor):
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-4o",
         max_entities_per_call: int = 20,
         # Azure OpenAI settings
         use_azure: bool = False,

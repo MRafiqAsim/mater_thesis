@@ -76,8 +76,12 @@ class ReActConfig:
     """Configuration for ReAct agent."""
     max_steps: int = 10
     temperature: float = 0.0
-    model: str = "gpt-4o"
+    model: str = ""  # resolved from AZURE_OPENAI_DEPLOYMENT env var
     verbose: bool = True
+
+    def __post_init__(self):
+        if not self.model:
+            self.model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
 
 class ReActRetriever:
@@ -135,7 +139,7 @@ class ReActRetriever:
                     api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
                 )
                 self.use_azure = True
-                self.config.model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+                # model already resolved from env in ReActConfig.__post_init__
                 logger.info("Using Azure OpenAI for ReAct")
                 return
 

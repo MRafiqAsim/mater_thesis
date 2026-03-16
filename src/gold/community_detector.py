@@ -135,7 +135,7 @@ class CommunityDetector:
                     api_key=azure_key,
                     api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
                 )
-                self.llm_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+                self.llm_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
                 logger.info("Using Azure OpenAI for community summarization")
                 return
 
@@ -144,7 +144,7 @@ class CommunityDetector:
             if openai_key:
                 from openai import OpenAI
                 self.llm_client = OpenAI(api_key=openai_key)
-                self.llm_model = "gpt-4o-mini"
+                self.llm_model = "gpt-4o"
                 logger.info("Using OpenAI for community summarization")
                 return
 

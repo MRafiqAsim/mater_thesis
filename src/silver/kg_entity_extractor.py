@@ -245,7 +245,7 @@ class LLMKGExtractor(KGEntityExtractor):
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-4o-mini",
+        model: str = "gpt-4o",
         entity_types: Set[str] = None,
         # Azure OpenAI settings
         use_azure: bool = False,

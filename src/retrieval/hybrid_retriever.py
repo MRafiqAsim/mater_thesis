@@ -73,10 +73,19 @@ class HybridConfig:
     final_top_k: int = 10
     min_confidence: float = 0.3
 
+    # GraphRAG search mode: "auto" (query-based routing), "global", or "local"
+    graphrag_search_type: str = ""
+
     # Answer generation
     use_llm_answer: bool = True
-    answer_model: str = "gpt-4o-mini"
+    answer_model: str = ""  # resolved from AZURE_OPENAI_DEPLOYMENT env var
     max_context_chunks: int = 5
+
+    def __post_init__(self):
+        if not self.answer_model:
+            self.answer_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+        if not self.graphrag_search_type:
+            self.graphrag_search_type = os.getenv("GRAPHRAG_SEARCH_TYPE", "auto")
 
 
 class HybridRetriever:
@@ -137,7 +146,7 @@ class HybridRetriever:
                     api_key=azure_key,
                     api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
                 )
-                self.config.answer_model = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
+                # answer_model already resolved from env in HybridConfig.__post_init__
                 return
 
             openai_key = os.getenv("OPENAI_API_KEY")
@@ -308,7 +317,11 @@ class HybridRetriever:
             return self._vector_retrieve(query)
 
         # Route: global (aggregate/broad) vs local (specific entity)
-        search_type = self.toolkit.route_graphrag_query(query)
+        if self.config.graphrag_search_type == "auto":
+            search_type = self.toolkit.route_graphrag_query(query)
+        else:
+            search_type = self.config.graphrag_search_type
+            logger.info(f"GraphRAG search type forced to: {search_type}")
         model = self.config.answer_model
 
         if search_type == "global":

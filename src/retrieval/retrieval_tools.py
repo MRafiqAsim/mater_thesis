@@ -1107,7 +1107,7 @@ class RetrievalToolkit:
         self,
         query: str,
         llm_client,
-        model: str = "gpt-4o",
+        model: str = None,
         level: int = 0,
         max_chunks_per_community: int = 3,
     ) -> ToolResult:
@@ -1119,6 +1119,7 @@ class RetrievalToolkit:
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from prompt_loader import get_prompt
+        model = model or os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
         start_time = datetime.now()
 
         try:
@@ -1296,7 +1297,7 @@ class RetrievalToolkit:
         self,
         query: str,
         llm_client,
-        model: str = "gpt-4o",
+        model: str = None,
         top_entities: int = 10,
         max_relationships: int = 20,
     ) -> ToolResult:
@@ -1308,6 +1309,7 @@ class RetrievalToolkit:
         3. Build context and generate answer via LLM
         """
         from prompt_loader import get_prompt
+        model = model or os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
         start_time = datetime.now()
 
         try:

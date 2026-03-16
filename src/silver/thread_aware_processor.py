@@ -1469,7 +1469,7 @@ class ThreadAwareProcessor:
             else:
                 from openai import OpenAI
                 client = OpenAI(api_key=self.openai_api_key)
-                model = "gpt-4o-mini"
+                model = "gpt-4o"
 
             headers = email.get('email_headers', {})
             subject = headers.get('subject', '')
@@ -1575,7 +1575,7 @@ class ThreadAwareProcessor:
             else:
                 from openai import OpenAI
                 client = OpenAI(api_key=self.openai_api_key)
-                model = "gpt-4o-mini"
+                model = "gpt-4o"
 
             # Scale context window with document size
             # Small docs (1-2 chunks): 4000 chars, large docs (10+): up to 12000
@@ -1679,7 +1679,7 @@ class ThreadAwareProcessor:
             else:
                 from openai import OpenAI
                 client = OpenAI(api_key=self.openai_api_key)
-                model = "gpt-4o-mini"
+                model = "gpt-4o"
 
             # Combine anonymized chunk texts
             combined_text = "\n\n".join([c.text_anonymized for c in chunks])[:4000]
