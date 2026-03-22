@@ -1,7 +1,7 @@
 """
 Email Sensitivity Classifier
 
-Classifies emails as 'technical' or 'sensitive' using a weighted scoring
+Classifies emails as 'personal' or 'not_personal' using a weighted scoring
 model across five signals:
   1. Subject line patterns  (0.30)
   2. Body content patterns  (0.30)
@@ -10,11 +10,10 @@ model across five signals:
   5. Attachment types       (0.10)
 
 Thread-level rule:
-  If ANY email in a thread is classified as 'technical',
-  the entire thread is treated as non-sensitive — names, roles,
-  and email addresses are preserved (no anonymization).
+  If ANY email in a thread is classified as 'personal',
+  the entire thread is skipped (saved to personal/ folder).
 
-  Default (no classification or 'sensitive') → anonymize as normal.
+  Default (no classification or 'not_personal') → process normally.
 """
 
 import json
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 class SensitivityResult:
     """Result of email sensitivity classification with audit trail."""
 
-    classification: str  # "technical" | "sensitive"
+    classification: str  # "personal" | "not_personal"
     confidence: float  # 0.0–1.0
     signals: Dict[str, Any] = field(default_factory=dict)
 
@@ -49,7 +48,7 @@ class SensitivityResult:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SensitivityResult":
         return cls(
-            classification=data.get("classification", "sensitive"),
+            classification=data.get("classification", "not_personal"),
             confidence=data.get("confidence", 0.5),
             signals=data.get("signals", {}),
         )
@@ -367,7 +366,7 @@ class EmailSensitivityClassifier:
 
         # Default to technical — enterprise emails are mostly work-related.
         # Only classify as sensitive with clear negative evidence.
-        classification = "technical" if weighted_sum >= 0 else "sensitive"
+        classification = "not_personal" if weighted_sum >= 0 else "personal"
 
         # Confidence via sigmoid
         raw = abs(weighted_sum)
@@ -557,28 +556,28 @@ class EmailSensitivityClassifier:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def should_anonymize_thread(
+    def should_skip_thread(
         email_classifications: List[Optional[SensitivityResult]],
     ) -> bool:
         """
-        Decide whether a thread should be anonymized.
+        Decide whether a thread should be skipped (personal content).
 
-        Rule: if ANY email in the thread is classified as 'technical',
-        skip anonymization for the entire thread.
+        Rule: if ANY email in the thread is classified as 'personal',
+        skip the entire thread.
 
         Args:
             email_classifications: List of SensitivityResult (one per email
                                    in the thread). None entries are treated
-                                   as 'sensitive' (safe default).
+                                   as 'not_personal' (safe default — process it).
 
         Returns:
-            True if the thread should be anonymized, False if it can be
-            preserved as-is (technical thread).
+            True if the thread should be skipped (personal),
+            False if it should be processed (not_personal / work content).
         """
         for result in email_classifications:
-            if result and result.classification == "technical":
-                return False  # At least one technical → preserve whole thread
-        return True  # Default: anonymize
+            if result and result.classification == "personal":
+                return True  # At least one personal → skip whole thread
+        return False  # Default: process
 
 
 class LLMSensitivityClassifier:
@@ -653,11 +652,9 @@ class LLMSensitivityClassifier:
 
         system_prompt = self._get_prompt(
             "silver", "sensitivity_classification", "system_prompt",
-            "Classify emails as 'technical' or 'sensitive'. Respond with JSON.",
         )
         user_template = self._get_prompt(
             "silver", "sensitivity_classification", "user_prompt",
-            'Subject: {subject}\nBody:\n{body}\n\nRespond: {{"classification":"technical" or "sensitive","confidence":0.0-1.0,"reasoning":"..."}}',
         )
         user_prompt = self._format_prompt(
             user_template,
@@ -688,9 +685,9 @@ class LLMSensitivityClassifier:
             content = response.choices[0].message.content
             result = json.loads(content)
 
-            classification = result.get("classification", "sensitive").lower()
-            if classification not in ("technical", "sensitive"):
-                classification = "sensitive"
+            classification = result.get("classification", "not_personal").lower()
+            if classification not in ("personal", "not_personal"):
+                classification = "not_personal"
 
             confidence = float(result.get("confidence", 0.7))
             reasoning = result.get("reasoning", "")
@@ -703,16 +700,16 @@ class LLMSensitivityClassifier:
 
         except Exception as e:
             logger.warning(f"LLM sensitivity classification failed: {e}")
-            # Fall back to safe default
+            # Fall back to safe default — process the email (not_personal)
             return SensitivityResult(
-                classification="sensitive",
+                classification="not_personal",
                 confidence=0.5,
                 signals={"method": "llm", "error": str(e)},
             )
 
     @staticmethod
-    def should_anonymize_thread(
+    def should_skip_thread(
         email_classifications: List[Optional[SensitivityResult]],
     ) -> bool:
         """Same thread-level rule as regex classifier."""
-        return EmailSensitivityClassifier.should_anonymize_thread(email_classifications)
+        return EmailSensitivityClassifier.should_skip_thread(email_classifications)

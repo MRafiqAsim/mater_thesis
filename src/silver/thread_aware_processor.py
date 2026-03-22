@@ -93,7 +93,7 @@ class ThreadChunk:
     classification_confidence: float = 0.0        # 0.0–1.0 from Bronze classifier
 
     # Sensitivity
-    anonymization_skipped: bool = False  # True if thread was classified as technical
+    anonymization_skipped: bool = False  # True if thread was classified as not_personal
 
     # Metadata
     language: str = "en"
@@ -454,8 +454,10 @@ class ThreadAwareProcessor:
             "attachment_chunks_created": 0,
             "attachment_summaries_generated": 0,
             "vision_ocr_extracted": 0,
-            "threads_technical": 0,
-            "threads_skipped_non_technical": 0,
+            "threads_not_personal": 0,
+            "threads_skipped_personal": 0,
+            "emails_not_personal": 0,
+            "emails_skipped_personal": 0,
             "errors": 0,
             "start_time": None,
             "end_time": None,
@@ -653,31 +655,9 @@ class ThreadAwareProcessor:
                 result.append(anon.anonymized_text)
         return result
 
-    def _should_anonymize_thread(self, thread: EmailThread) -> bool:
-        """
-        Check if a thread should be anonymized based on email sensitivity.
-
-        Classification runs entirely in Silver layer:
-        - local/hybrid modes: regex-based EmailSensitivityClassifier
-        - llm mode: GPT-4o LLMSensitivityClassifier
-
-        If ANY email is classified as 'technical', the whole thread is
-        preserved (not anonymized).
-
-        Returns:
-            True if anonymization should proceed, False to skip it.
-        """
-        classifications = []
-
-        for email in thread.emails:
-            result = self.sensitivity_classifier.classify(email)
-            classifications.append(result)
-            logger.debug(
-                f"Sensitivity: '{email.get('email_headers', {}).get('subject', '')[:40]}' "
-                f"→ {result.classification} ({result.confidence:.2f})"
-            )
-
-        return EmailSensitivityClassifier.should_anonymize_thread(classifications)
+    def _classify_email(self, email: Dict[str, Any]) -> SensitivityResult:
+        """Classify a single email as personal or not_personal."""
+        return self.sensitivity_classifier.classify(email)
 
     def _extract_kg_relationships(
         self,
@@ -703,8 +683,8 @@ class ThreadAwareProcessor:
         return relationship_dicts
 
     def _save_attachment_chunk(self, chunk: ThreadChunk) -> None:
-        """Save attachment chunk to Silver layer technical/attachment_chunks/"""
-        chunk_dir = self.silver_path / "technical" / "attachment_chunks"
+        """Save attachment chunk to Silver layer not_personal/attachment_chunks/"""
+        chunk_dir = self.silver_path / "not_personal" / "attachment_chunks"
         chunk_file = chunk_dir / f"{chunk.chunk_id}.json"
         chunk_file.parent.mkdir(parents=True, exist_ok=True)
         with open(chunk_file, "w", encoding="utf-8") as f:
@@ -735,7 +715,7 @@ class ThreadAwareProcessor:
 
         for att_content in attachment_contents:
             # 1. Vision OCR: scanned PDF with empty text → extract via GPT-4o Vision
-            #    (Thread is already classified as technical — we're only here for technical threads)
+            #    (Thread is already classified as not_personal — we're only here for work threads)
             is_pdf = att_content.doc_type == "pdf"
             has_no_text = not att_content.text.strip()
             if is_pdf:
@@ -924,16 +904,16 @@ class ThreadAwareProcessor:
 
         Layout:
             silver/
-            ├── technical/            ← processed (chunked, anonymized, KG)
+            ├── not_personal/         ← processed (chunked, anonymized, KG)
             │   ├── thread_chunks/
             │   ├── email_chunks/
             │   ├── attachment_chunks/knowledge/
             │   ├── thread_summaries/
             │   └── attachment_summaries/
-            ├── non_technical/        ← raw Bronze data, skipped
+            ├── personal/             ← raw Bronze data, skipped
             └── metadata/
         """
-        tech = self.silver_path / "technical"
+        tech = self.silver_path / "not_personal"
         directories = [
             tech / "thread_chunks",
             tech / "thread_summaries",
@@ -941,7 +921,7 @@ class ThreadAwareProcessor:
             tech / "email_chunks",
             tech / "attachment_chunks",
             tech / "attachment_summaries",
-            self.silver_path / "non_technical",
+            self.silver_path / "personal",
             self.silver_path / "metadata",
         ]
 
@@ -1008,23 +988,46 @@ class ThreadAwareProcessor:
         return self.stats
 
     def _process_thread(self, thread: EmailThread) -> List[ThreadChunk]:
-        """Process a multi-email thread (attachments processed separately)"""
+        """Process a multi-email thread (attachments processed separately).
+
+        Each email is classified individually. Personal emails are saved
+        to personal/ and excluded from processing. Only not_personal emails
+        are concatenated, chunked, and indexed.
+        """
         chunks = []
 
-        # Check thread sensitivity — if any email is technical, process it
-        should_anonymize = self._should_anonymize_thread(thread)
-        if not should_anonymize:
-            self.stats["threads_technical"] += 1
-            logger.info(f"Thread '{thread.subject[:50]}' classified as technical — skipping anonymization")
-        else:
-            # Non-technical thread: skip processing entirely, save to non_technical/
-            self.stats["threads_skipped_non_technical"] += 1
-            self._save_non_technical(thread)
-            logger.info(f"Thread '{thread.subject[:50]}' classified as non-technical — skipping processing")
+        # Classify each email individually — keep only not_personal ones
+        work_emails = []
+        for email in thread.emails:
+            result = self.sensitivity_classifier.classify(email)
+            subj = email.get('email_headers', {}).get('subject', '')[:40]
+            logger.debug(f"Sensitivity: '{subj}' → {result.classification} ({result.confidence:.2f})")
+
+            if result.classification == "personal":
+                self.stats["emails_skipped_personal"] += 1
+                logger.info(f"Email '{subj}' classified as personal — skipping")
+            else:
+                work_emails.append(email)
+                self.stats["emails_not_personal"] += 1
+
+        if not work_emails:
+            # All emails in thread are personal — save entire thread and skip
+            self.stats["threads_skipped_personal"] += 1
+            self._save_personal(thread)
+            logger.info(f"Thread '{thread.subject[:50]}' — all emails personal — skipping")
             return chunks
 
-        # Concatenate thread emails (body text only, no attachments)
-        thread_text = thread.to_concatenated_text(include_metadata=True)
+        self.stats["threads_not_personal"] += 1
+
+        # Build a filtered thread with only work emails
+        filtered_thread = EmailThread(
+            conversation_id=thread.conversation_id,
+            subject=thread.subject,
+            emails=work_emails,
+        )
+
+        # Concatenate filtered emails (body text only, no attachments)
+        thread_text = filtered_thread.to_concatenated_text(include_metadata=True)
         thread_text = clean_email_text(thread_text)
 
         # Collect attachment metadata and contents for separate processing
@@ -1033,7 +1036,7 @@ class ThreadAwareProcessor:
         all_attachment_contents = []
 
         if self.process_attachments and self.attachment_processor:
-            for email in thread.emails:
+            for email in work_emails:
                 email_id = email.get('record_id', '')
                 email_meta = email.get('document_metadata', {})
                 has_att = email_meta.get('has_attachments', False)
@@ -1069,7 +1072,7 @@ class ThreadAwareProcessor:
 
         # Process each email body chunk
         for chunk in text_chunks:
-            # Clean text (no anonymization for technical threads)
+            # Clean text (no anonymization for not_personal threads)
             anonymized_text = self._clean_text(chunk.text)
 
             # Extract KG entities — in LLM mode, also returns text_english
@@ -1088,21 +1091,21 @@ class ThreadAwareProcessor:
 
             final_kg_entities = kg_entity_dicts
             final_kg_rels = kg_relationships
-            final_participants = thread.participants
+            final_participants = filtered_thread.participants
 
             # Create thread chunk (source_type="email")
             thread_chunk = ThreadChunk(
-                chunk_id=self._safe_filename(f"{thread.conversation_id}_{chunk.chunk_index}"),
-                thread_id=thread.conversation_id,
+                chunk_id=self._safe_filename(f"{filtered_thread.conversation_id}_{chunk.chunk_index}"),
+                thread_id=filtered_thread.conversation_id,
                 chunk_index=chunk.chunk_index,
                 text_original=chunk.text,
                 text_anonymized=anonymized_text,
                 text_english=text_english,
                 token_count=chunk.token_count,
-                thread_subject=thread.subject,
+                thread_subject=filtered_thread.subject,
                 thread_participants=final_participants,
-                thread_email_count=thread.email_count,
-                email_position=f"thread_{thread.email_count}_emails",
+                thread_email_count=filtered_thread.email_count,
+                email_position=f"thread_{filtered_thread.email_count}_emails",
                 pii_entities=[],
                 pii_count=0,
                 kg_entities=final_kg_entities,
@@ -1110,7 +1113,7 @@ class ThreadAwareProcessor:
                 has_attachments=has_attachments,
                 attachment_count=total_attachments,
                 attachment_filenames=all_attachment_filenames,
-                source_email_ids=[e.get('record_id', '') for e in thread.emails if e.get('record_id')],
+                source_email_ids=[e.get('record_id', '') for e in work_emails if e.get('record_id')],
                 source_type="email",
                 anonymization_skipped=True,
                 language=language,
@@ -1126,21 +1129,21 @@ class ThreadAwareProcessor:
         if all_attachment_contents:
             att_chunks, attachment_ids = self._process_attachments_separately(
                 attachment_contents=all_attachment_contents,
-                thread_id=thread.conversation_id,
-                subject=thread.subject,
-                participants=thread.participants,
-                email_count=thread.email_count,
+                thread_id=filtered_thread.conversation_id,
+                subject=filtered_thread.subject,
+                participants=filtered_thread.participants,
+                email_count=filtered_thread.email_count,
                 language=language,
-                should_anonymize=False,  # Technical threads: no anonymization
-                source_email_ids=[e.get('record_id', '') for e in thread.emails if e.get('record_id')],
+                should_anonymize=False,  # Not personal: no anonymization
+                source_email_ids=[e.get('record_id', '') for e in work_emails if e.get('record_id')],
             )
             chunks.extend(att_chunks)
 
         # Generate thread summary (email body chunks only, with attachment cross-refs)
         email_chunks = [c for c in chunks if c.source_type == "email"]
         if self.generate_summaries and email_chunks:
-            logger.info(f"  Generating summary for '{thread.subject[:50]}' ({len(email_chunks)} chunks)")
-            self._generate_thread_summary(thread, email_chunks, language, attachment_ids=attachment_ids)
+            logger.info(f"  Generating summary for '{filtered_thread.subject[:50]}' ({len(email_chunks)} chunks)")
+            self._generate_thread_summary(filtered_thread, email_chunks, language, attachment_ids=attachment_ids)
 
         # TODO: Per-email summaries (disabled — sibling chunks + thread summary suffice)
         # if self.generate_summaries:
@@ -1157,16 +1160,17 @@ class ThreadAwareProcessor:
         if not email:
             return chunks
 
-        # Check sensitivity — single email thread uses same logic
-        should_anonymize = self._should_anonymize_thread(thread)
-        if not should_anonymize:
-            self.stats["threads_technical"] += 1
-        else:
-            # Non-technical: skip processing, save to non_technical/
-            self.stats["threads_skipped_non_technical"] += 1
-            self._save_non_technical(thread)
-            logger.info(f"Email '{thread.subject[:50]}' classified as non-technical — skipping processing")
+        # Classify this email — if personal, skip processing entirely
+        result = self._classify_email(email)
+        if result.classification == "personal":
+            self.stats["emails_skipped_personal"] += 1
+            self.stats["threads_skipped_personal"] += 1
+            self._save_personal(thread)
+            logger.info(f"Email '{thread.subject[:50]}' classified as personal — skipping processing")
             return chunks
+
+        self.stats["emails_not_personal"] += 1
+        self.stats["threads_not_personal"] += 1
 
         # Get email body text only (no attachments)
         email_text, _ = self._format_single_email(email, include_attachments=False)
@@ -1208,7 +1212,7 @@ class ThreadAwareProcessor:
 
         # Process each email body chunk
         for chunk in text_chunks:
-            # Clean text (no anonymization for technical emails)
+            # Clean text (no anonymization for not_personal emails)
             anonymized_text = self._clean_text(chunk.text)
 
             # Extract KG entities — in LLM mode, also returns text_english
@@ -1269,7 +1273,7 @@ class ThreadAwareProcessor:
                 participants=thread.participants,
                 email_count=1,
                 language=language,
-                should_anonymize=False,  # Technical email: no anonymization
+                should_anonymize=False,  # Not personal email: no anonymization
                 source_email_ids=[email_record_id] if email_record_id != 'unknown' else [],
             )
             chunks.extend(att_chunks)
@@ -1418,7 +1422,7 @@ class ThreadAwareProcessor:
         # For single emails, chunk_id starts with record_id
         # For thread emails, we can't map precisely — leave empty
         if thread.email_count == 1:
-            chunk_dir = self.silver_path / "technical" / "email_chunks"
+            chunk_dir = self.silver_path / "not_personal" / "email_chunks"
             if chunk_dir.exists():
                 for f in chunk_dir.glob(f"{email_id}_*.json"):
                     chunk_ids.append(f.stem)
@@ -1501,7 +1505,7 @@ class ThreadAwareProcessor:
     def _save_email_summary(self, summary: EmailSummary) -> None:
         """Save email summary to Silver layer."""
         safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in summary.email_id)[:100]
-        summary_file = self.silver_path / "technical" / "email_summaries" / f"{safe_id}.json"
+        summary_file = self.silver_path / "not_personal" / "email_summaries" / f"{safe_id}.json"
         summary_file.parent.mkdir(parents=True, exist_ok=True)
         with open(summary_file, "w", encoding="utf-8") as f:
             json.dump(summary.to_dict(), f, indent=2, ensure_ascii=False, default=str)
@@ -1617,7 +1621,7 @@ class ThreadAwareProcessor:
 
     def _save_attachment_summary(self, summary: AttachmentSummary) -> None:
         """Save attachment summary to Silver layer."""
-        summary_dir = self.silver_path / "technical" / "attachment_summaries"
+        summary_dir = self.silver_path / "not_personal" / "attachment_summaries"
         summary_dir.mkdir(parents=True, exist_ok=True)
         safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in summary.attachment_id)[:100]
         summary_file = summary_dir / f"{safe_id}.json"
@@ -1721,10 +1725,10 @@ class ThreadAwareProcessor:
         safe_prefix = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw_id)[:60]
         return f"{safe_prefix}_{hash_suffix}"
 
-    def _save_non_technical(self, thread: EmailThread) -> None:
-        """Save a non-technical thread/email to the non_technical/ folder with full Bronze data."""
+    def _save_personal(self, thread: EmailThread) -> None:
+        """Save a personal thread/email to the personal/ folder with full Bronze data."""
         safe_id = self._safe_filename(thread.conversation_id)
-        out_file = self.silver_path / "non_technical" / f"{safe_id}.json"
+        out_file = self.silver_path / "personal" / f"{safe_id}.json"
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
         record = {
@@ -1732,8 +1736,8 @@ class ThreadAwareProcessor:
             "subject": thread.subject,
             "participants": thread.participants,
             "email_count": thread.email_count,
-            "classification": "non_technical",
-            "reason": "Thread classified as non-technical (sensitive) — skipped processing",
+            "classification": "personal",
+            "reason": "Thread classified as personal — skipped processing",
             "skipped_at": datetime.now().isoformat(),
             "emails": thread.emails,  # Full Bronze email data for reference
         }
@@ -1743,14 +1747,14 @@ class ThreadAwareProcessor:
 
     def _save_thread_chunk(self, chunk: ThreadChunk) -> None:
         """Save thread chunk to Silver layer"""
-        chunk_file = self.silver_path / "technical" / "thread_chunks" / f"{chunk.chunk_id}.json"
+        chunk_file = self.silver_path / "not_personal" / "thread_chunks" / f"{chunk.chunk_id}.json"
         chunk_file.parent.mkdir(parents=True, exist_ok=True)
         with open(chunk_file, "w", encoding="utf-8") as f:
             json.dump(chunk.to_dict(), f, indent=2, ensure_ascii=False, default=str)
 
     def _save_individual_chunk(self, chunk: ThreadChunk) -> None:
         """Save individual email chunk to Silver layer"""
-        chunk_file = self.silver_path / "technical" / "email_chunks" / f"{chunk.chunk_id}.json"
+        chunk_file = self.silver_path / "not_personal" / "email_chunks" / f"{chunk.chunk_id}.json"
         chunk_file.parent.mkdir(parents=True, exist_ok=True)
         with open(chunk_file, "w", encoding="utf-8") as f:
             json.dump(chunk.to_dict(), f, indent=2, ensure_ascii=False, default=str)
@@ -1759,7 +1763,7 @@ class ThreadAwareProcessor:
         """Save thread summary to Silver layer"""
         # Sanitize filename
         safe_id = self._safe_filename(summary.thread_id)
-        summary_file = self.silver_path / "technical" / "thread_summaries" / f"{safe_id}.json"
+        summary_file = self.silver_path / "not_personal" / "thread_summaries" / f"{safe_id}.json"
         summary_file.parent.mkdir(parents=True, exist_ok=True)
         with open(summary_file, "w", encoding="utf-8") as f:
             json.dump(summary.to_dict(), f, indent=2, ensure_ascii=False, default=str)

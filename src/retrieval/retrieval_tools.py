@@ -1491,7 +1491,7 @@ class RetrievalToolkit:
             return None
 
         # chunk_id is already a safe filename — direct lookup
-        for pattern in ["technical/thread_chunks", "technical/email_chunks", "technical/attachment_chunks"]:
+        for pattern in ["not_personal/thread_chunks", "not_personal/email_chunks", "not_personal/attachment_chunks"]:
             chunk_path = self.silver_path / pattern / f"{chunk_id}.json"
             if chunk_path.exists():
                 with open(chunk_path, 'r', encoding='utf-8') as f:

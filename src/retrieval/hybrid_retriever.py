@@ -308,7 +308,11 @@ class HybridRetriever:
         return None
 
     def _graphrag_retrieve(self, query: str) -> RetrievalResult:
-        """GraphRAG retrieval using Global Search (map-reduce) or Local Search."""
+        """GraphRAG retrieval using Global Search (map-reduce) or Local Search.
+
+        Raw evidence from GraphRAG is passed through the unified _generate_answer()
+        prompt so that all strategies are compared on equal footing.
+        """
         import time
         start = time.time()
 
@@ -343,7 +347,6 @@ class HybridRetriever:
             return self._vector_retrieve(query)
 
         # Load source chunks for citation
-        answer = result.data.get("answer", "")
         source_chunk_ids = result.data.get("source_chunk_ids", [])
 
         chunks = []
@@ -352,8 +355,33 @@ class HybridRetriever:
             if chunk_result.success and chunk_result.data:
                 chunks.append(chunk_result.data)
 
-        # Check grounding
-        is_grounded, missing_info = self._check_grounding(answer)
+        # Build extra context from GraphRAG-specific evidence
+        extra_parts = []
+        # Global search: scored evidence points from map phase
+        points = result.data.get("points", [])
+        if points:
+            points_text = "\n".join(
+                f"- [{p.get('score', '')}] {p.get('point', '')}" for p in points
+            )
+            extra_parts.append(f"Key evidence points from community analysis:\n{points_text}")
+
+        # Local search: entity/relationship/community context
+        for ctx_key in ("entities", "relationships", "community_reports", "source_text"):
+            if ctx_key in result.data and result.data[ctx_key]:
+                extra_parts.append(f"{ctx_key.replace('_', ' ').title()}:\n{result.data[ctx_key]}")
+
+        extra_context = "\n\n".join(extra_parts)
+
+        # Generate answer through the unified prompt
+        answer = ""
+        is_grounded = True
+        missing_info = None
+        if self.config.use_llm_answer and (chunks or extra_context):
+            answer, is_grounded, missing_info = self._generate_answer(
+                query,
+                chunks[:self.config.max_context_chunks],
+                extra_context=extra_context,
+            )
 
         execution_time = time.time() - start
 
@@ -367,7 +395,7 @@ class HybridRetriever:
             metadata={
                 "search_type": search_type,
                 "communities_used": result.data.get("source_communities", []),
-                "points_count": len(result.data.get("points", [])),
+                "points_count": len(points),
                 "entity_count": result.data.get("entity_count", 0),
                 "tool_message": result.message,
             },
@@ -484,7 +512,12 @@ class HybridRetriever:
         )
 
     def _react_retrieve(self, query: str) -> RetrievalResult:
-        """ReAct: Autonomous agent retrieval."""
+        """ReAct: Autonomous agent retrieval.
+
+        The ReAct agent handles tool selection and evidence gathering.
+        The final answer is generated through the unified _generate_answer()
+        prompt so that all strategies are compared on equal footing.
+        """
         react_result = self.react_retriever.query(query)
 
         # Convert ReAct sources to chunks
@@ -512,9 +545,33 @@ class HybridRetriever:
                             chunks.append(chunk_result.data)
                             seen_chunk_ids.add(cid)
 
+        # Build extra context from ReAct reasoning observations
+        extra_parts = []
+        for step in react_result.steps:
+            if step.observation:
+                extra_parts.append(
+                    f"[Step {step.step_number} — {step.action or 'reasoning'}]: {step.observation}"
+                )
+        extra_context = "\n\n---\n\n".join(extra_parts) if extra_parts else ""
+
+        # Generate answer through the unified prompt
+        answer = ""
+        is_grounded = True
+        missing_info = None
+        if self.config.use_llm_answer and (chunks or extra_context):
+            answer, is_grounded, missing_info = self._generate_answer(
+                query,
+                chunks[:self.config.max_context_chunks],
+                extra_context=extra_context,
+            )
+        elif react_result.answer:
+            # No LLM available — use the agent's own answer as fallback
+            answer = react_result.answer
+            is_grounded, missing_info = self._check_grounding(answer)
+
         return RetrievalResult(
             query=query,
-            answer=react_result.answer,
+            answer=answer,
             chunks=chunks,
             strategy="react",
             confidence=1.0 if react_result.success else 0.0,
@@ -524,7 +581,9 @@ class HybridRetriever:
                 "steps": len(react_result.steps),
                 "total_tokens": react_result.total_tokens,
                 "reasoning_trace": [s.to_dict() for s in react_result.steps]
-            }
+            },
+            is_grounded=is_grounded,
+            missing_info=missing_info,
         )
 
     def _get_all_thread_subjects(self) -> List[str]:
@@ -534,7 +593,7 @@ class HybridRetriever:
 
         subjects = set()
         silver = Path(self.silver_path)
-        for folder in ["technical/thread_chunks", "technical/email_chunks"]:
+        for folder in ["not_personal/thread_chunks", "not_personal/email_chunks"]:
             folder_path = silver / folder
             if not folder_path.exists():
                 continue
@@ -705,9 +764,9 @@ class HybridRetriever:
 
         # 1. Search Silver layer for sibling chunks
         search_dirs = [
-            self.silver_path / "technical" / "thread_chunks",
-            self.silver_path / "technical" / "email_chunks",
-            self.silver_path / "technical" / "attachment_chunks",
+            self.silver_path / "not_personal" / "thread_chunks",
+            self.silver_path / "not_personal" / "email_chunks",
+            self.silver_path / "not_personal" / "attachment_chunks",
         ]
 
         sibling_chunks = []
@@ -740,7 +799,7 @@ class HybridRetriever:
 
         # 2. Load thread summaries for matched threads
         summary_context = []
-        thread_summaries_dir = self.silver_path / "technical" / "thread_summaries"
+        thread_summaries_dir = self.silver_path / "not_personal" / "thread_summaries"
         if thread_summaries_dir.exists():
             for summary_file in thread_summaries_dir.glob("*.json"):
                 try:
@@ -773,7 +832,7 @@ class HybridRetriever:
                     continue
 
         # TODO: Email summaries (disabled — sibling chunks + thread summary suffice)
-        # email_summaries_dir = self.silver_path / "technical" / "email_summaries"
+        # email_summaries_dir = self.silver_path / "not_personal" / "email_summaries"
         # if email_summaries_dir.exists():
         #     for summary_file in email_summaries_dir.glob("*.json"):
         #         ...
@@ -791,7 +850,7 @@ class HybridRetriever:
         """Load an attachment summary by ID from Silver layer."""
         if not self.silver_path:
             return None
-        summary_dir = self.silver_path / "technical" / "attachment_summaries"
+        summary_dir = self.silver_path / "not_personal" / "attachment_summaries"
         if not summary_dir.exists():
             return None
         # Try exact match and sanitized match

@@ -134,7 +134,7 @@ def generate_examples() -> list[list[str]]:
                 examples.append([f"What tasks or projects is {persons[0]['name']} involved in?"])
 
         # 3. Thread-subject based question — pick a specific thread topic
-        summary_dir = silver / "technical" / "thread_summaries"
+        summary_dir = silver / "not_personal" / "thread_summaries"
         if summary_dir.exists():
             summaries = []
             for f in summary_dir.glob("*.json"):
