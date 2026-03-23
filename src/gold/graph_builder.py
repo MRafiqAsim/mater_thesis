@@ -294,7 +294,7 @@ class GraphBuilder:
 
         # Collect all chunk files
         chunk_files = []
-        for pattern in ["not_personal/thread_chunks/*.json", "not_personal/email_chunks/*.json"]:
+        for pattern in ["not_personal/email_chunks/*.json"]:
             chunk_files.extend(self.silver_path.glob(pattern))
 
         total_chunks = len(chunk_files)

@@ -81,6 +81,13 @@
       "max_tokens": 4000
     },
 
+    "email_summary": {
+      "system_prompt": "You are a summarization assistant for enterprise email processing.\nYour task is to produce work-focused summaries as plain prose paragraphs.\n\nFORMAT RULES (strict):\n- Write ONLY plain prose sentences. NO markdown: no **, no ##, no - bullets, no numbered lists, no backticks.\n- Write dense, flowing paragraphs. Combine related facts into sentences.\n\nCONTENT RULES:\n- KEEP all names, roles, email addresses, teams, departments, and organizational references\n- KEEP all technical details, project names, deadlines, decisions, action items, and outcomes\n- KEEP dates, reference numbers, document names, and business-relevant specifics\n- REMOVE personal/social messages embedded in work emails (e.g., wedding congratulations, birthday wishes, vacation stories, personal health updates, family news, holiday greetings)\n- REMOVE greetings, signatures, disclaimers, and email footer boilerplate\n- REMOVE phone numbers, fax numbers, physical addresses from signatures\n- If the entire email is work-related, summarize it fully without omitting anything\n- Be factual, concise, and information-dense\n- Do NOT add meta-commentary about what is missing or absent (e.g., 'No technical details were included'). Only state what IS in the email.",
+      "user_prompt": "Summarize this work email as plain prose (no markdown, no bullets, no lists). Keep all professional content (names, roles, technical details, decisions, actions). Remove personal/social messages, signatures, and boilerplate.\n\nSubject: {subject}\n\n{text}\n\nPlain prose summary:",
+      "temperature": 0.3,
+      "max_tokens": 500
+    },
+
     "email_thread_summarization": {
       "system_prompt": "You are a summarization assistant optimized for retrieval completeness, not readability.\nYour summaries will be used for embedding-based semantic search.\n\nFor email threads, extract:\n- All participants and their roles/actions\n- Decisions made, action items assigned, deadlines committed\n- Project names, document references, entity names\n- Outcomes, constraints, and open questions\n\nGuidelines:\n- Omit greetings, signatures, filler, and stylistic language\n- Be factual, compact, and information-dense\n- Use concise sentences or bullet-style phrasing\n- Prioritize completeness over fluency\n- Do NOT limit to a fixed number of sentences",
       "user_prompt": "Summarize this email thread for embedding-based retrieval.\nPreserve all retrieval-relevant information: participants, decisions, actions, dates, outcomes.\n\n{thread}\n\nSummary:",
@@ -177,6 +184,13 @@
         "no information",
         "not mentioned"
       ]
+    },
+
+    "query_rewriter": {
+      "system_prompt": "You rewrite follow-up questions into standalone queries for a retrieval system over an enterprise email archive.\n\nRules:\n- If the new question is already self-contained, return it unchanged.\n- If it references prior conversation (pronouns like 'it', 'they', 'this', 'that', 'those', or phrases like 'the same', 'more about', 'what else'), resolve the references using the conversation history.\n- Preserve entity names, dates, and specifics from the history.\n- Return ONLY the rewritten query, nothing else.",
+      "user_prompt": "Conversation history:\n{history}\n\nNew question: {question}\n\nRewritten standalone query:",
+      "temperature": 0.0,
+      "max_tokens": 200
     }
   }
 }

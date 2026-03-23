@@ -2,8 +2,13 @@
 """
 Retrieval Strategy Comparison — Gradio Web Interface
 
-Interactive comparison of 5 retrieval strategies:
+Interactive comparison of 5 retrieval strategies with multi-turn chat:
   Vector | PathRAG | GraphRAG | Hybrid | ReAct
+
+Tabs:
+  1. Chat       — Multi-turn conversational Q&A with follow-up support
+  2. Single Query — One-shot query with detailed metadata
+  3. Compare    — Side-by-side strategy comparison
 
 Usage:
     python -m src.app --mode local
@@ -14,9 +19,11 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -28,6 +35,7 @@ load_dotenv(project_root / ".env")
 import gradio as gr
 
 from src.retrieval import HybridRetriever, RetrievalStrategy, RetrievalResult
+from src.prompt_loader import get_prompt, format_prompt
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +65,8 @@ FALLBACK_EXAMPLES = [
     ["What technical issues were reported and how were they resolved?"],
     ["Who are the main contacts and what roles do they play?"],
 ]
+
+MAX_HISTORY_TURNS = 5  # Max conversation turns to include in query rewriting
 
 
 def get_retriever() -> HybridRetriever:
@@ -92,7 +102,6 @@ def generate_examples() -> list[list[str]]:
             key_ents = [e["name"] for e in comm.get("key_entities", [])[:3]]
             if summary and key_ents:
                 ent_str = ", ".join(key_ents)
-                # First sentence of summary as context
                 first_sent = summary.split(".")[0].strip()
                 if len(first_sent) > 20:
                     examples.append([f"What is the relationship between {ent_str}?"])
@@ -110,7 +119,6 @@ def generate_examples() -> list[list[str]]:
             if orgs:
                 examples.append([f"What do the emails say about {orgs[0]['name']}?"])
 
-            # Use PRODUCT or WORK_OF_ART entities, filtering out noise
             _noise = lambda name: (
                 any(c.isdigit() for c in name[:3])
                 or "." in name or ":" in name or "@" in name
@@ -149,7 +157,6 @@ def generate_examples() -> list[list[str]]:
     except Exception as e:
         logger.warning(f"Failed to generate dynamic examples: {e}")
 
-    # Deduplicate and cap at 6, fall back if empty
     seen = set()
     unique = []
     for ex in examples:
@@ -159,6 +166,79 @@ def generate_examples() -> list[list[str]]:
     examples = unique[:6]
 
     return examples if examples else FALLBACK_EXAMPLES
+
+
+# ---------------------------------------------------------------------------
+# Query rewriter for multi-turn
+# ---------------------------------------------------------------------------
+
+def rewrite_query(
+    question: str,
+    history: List[Dict[str, str]],
+) -> str:
+    """
+    Rewrite a follow-up question into a standalone query using conversation history.
+
+    If the question is already self-contained (first turn, or no pronouns/references),
+    returns it unchanged. Otherwise uses LLM to resolve references.
+    """
+    if not history:
+        return question
+
+    # Quick heuristic: skip rewriter if query seems self-contained
+    # (has named entities and no obvious references)
+    follow_up_signals = [
+        "it", "they", "them", "this", "that", "those", "these",
+        "the same", "more about", "what else", "who else",
+        "how about", "and what", "tell me more", "expand on",
+        "which one", "the first", "the second", "the last",
+    ]
+    question_lower = question.lower().strip()
+    is_follow_up = any(signal in question_lower for signal in follow_up_signals)
+
+    if not is_follow_up and len(question.split()) > 4:
+        return question
+
+    # Build history string (last N turns)
+    recent = history[-MAX_HISTORY_TURNS:]
+    history_lines = []
+    for turn in recent:
+        history_lines.append(f"User: {turn['user']}")
+        # Truncate long answers to keep rewriter context small
+        answer = turn["answer"][:500]
+        history_lines.append(f"Assistant: {answer}")
+    history_text = "\n".join(history_lines)
+
+    # Use LLM to rewrite
+    r = get_retriever()
+    if not r.llm_client:
+        return question
+
+    system_prompt = get_prompt("retrieval", "query_rewriter", "system_prompt", "")
+    user_prompt = format_prompt(
+        get_prompt("retrieval", "query_rewriter", "user_prompt", ""),
+        history=history_text,
+        question=question,
+    )
+
+    try:
+        response = r.llm_client.chat.completions.create(
+            model=r.config.answer_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=get_prompt("retrieval", "query_rewriter", "temperature", 0.0),
+            max_tokens=get_prompt("retrieval", "query_rewriter", "max_tokens", 200),
+        )
+        rewritten = response.choices[0].message.content.strip()
+        if rewritten:
+            logger.info(f"Query rewritten: '{question}' → '{rewritten}'")
+            return rewritten
+    except Exception as e:
+        logger.warning(f"Query rewrite failed: {e}")
+
+    return question
 
 
 # ---------------------------------------------------------------------------
@@ -189,29 +269,24 @@ def format_sources(result: RetrievalResult) -> str:
     return "\n".join(lines)
 
 
-def format_metadata(result: RetrievalResult) -> str:
+def format_metadata(result: RetrievalResult, rewritten_query: str = "", original_query: str = "") -> str:
     grounded_str = "Yes" if result.is_grounded else "No"
+    steps = result.metadata.get("steps", 0)
+    total_tokens = result.metadata.get("total_tokens", 0)
+
     lines = [
         "### Metadata\n",
         f"| Field | Value |",
         f"|-------|-------|",
         f"| Strategy | **{result.strategy}** |",
-        f"| Grounded | {grounded_str} |",
         f"| Confidence | {result.confidence:.2%} |",
         f"| Chunks | {len(result.chunks)} |",
         f"| Time | {result.execution_time:.2f}s |",
+        f"| Steps | {steps} |",
+        f"| Tokens | {total_tokens} |",
     ]
-    if result.missing_info:
-        lines.append(f"| Missing Info | {result.missing_info} |")
-
-    # Extra metadata keys
-    skip = {"reasoning_trace", "tool_message"}
-    for key, val in result.metadata.items():
-        if key in skip:
-            continue
-        # Compact display for complex values
-        display = val if isinstance(val, (int, float, str, bool)) else json.dumps(val, default=str)[:120]
-        lines.append(f"| {key} | {display} |")
+    # Rewritten query shown separately below the input, not in metadata
+    # Rewritten query shown separately below the input, not in metadata
 
     return "\n".join(lines)
 
@@ -240,8 +315,92 @@ def format_react_trace(result: RetrievalResult) -> str:
     return "\n".join(lines)
 
 
+def format_sources_compact(result: RetrievalResult) -> str:
+    """Compact source list for chat detail panel."""
+    if not result.chunks:
+        return ""
+    lines = []
+    for i, chunk in enumerate(result.chunks[:5], 1):
+        thread = chunk.get("thread_subject", "")
+        source_type = chunk.get("source_type", "email")
+        lines.append(f"{i}. [{source_type}] {thread}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
-# Query handlers
+# Chat handler (multi-turn)
+# ---------------------------------------------------------------------------
+
+def chat_respond(
+    message: str,
+    chat_history: List[Dict[str, str]],
+    conv_state: List[Dict[str, str]],
+    strategy_label: str,
+    top_k: int,
+):
+    """
+    Handle a chat message with multi-turn context.
+
+    Args:
+        message: User's new message
+        chat_history: Gradio chatbot display history [{"role": ..., "content": ...}, ...]
+        conv_state: Internal conversation state [{"user": ..., "answer": ...}, ...]
+        strategy_label: Selected retrieval strategy
+        top_k: Number of chunks to retrieve
+
+    Returns:
+        (updated_chat_history, updated_conv_state, sources_md, metadata_md, rewrite_display)
+    """
+    if not message.strip():
+        return chat_history, conv_state, "", "", ""
+
+    strategy = STRATEGY_MAP[strategy_label]
+    r = get_retriever()
+    r.config.top_k_per_strategy = int(top_k)
+    r.config.final_top_k = int(top_k)
+
+    # Step 1: Rewrite follow-up query using conversation history
+    rewritten = rewrite_query(message, conv_state)
+    rewrite_display = ""
+    if rewritten != message:
+        rewrite_display = f"*Rewritten:* {rewritten}"
+
+    # Step 2: Retrieve using the (possibly rewritten) query
+    result = r.retrieve(rewritten, strategy)
+
+    # Step 3: Format response
+    answer = format_answer(result)
+    sources = format_sources(result)
+    metadata = format_metadata(result, rewritten_query=rewritten, original_query=message)
+
+    if strategy == RetrievalStrategy.REACT:
+        trace = format_react_trace(result)
+        if trace and "No reasoning trace" not in trace:
+            metadata += "\n\n" + trace
+
+    # Step 4: Update conversation state
+    conv_state.append({
+        "user": message,
+        "rewritten": rewritten,
+        "answer": result.answer or "",
+        "strategy": strategy_label,
+        "sources_count": len(result.chunks),
+    })
+
+    # Step 5: Update chat display (messages format for Gradio 6.x)
+    chat_history.append({"role": "user", "content": message})
+    chat_history.append({"role": "assistant", "content": answer})
+
+    return chat_history, conv_state, sources, metadata, rewrite_display
+
+
+def clear_chat():
+    """Reset chat history and conversation state."""
+    return [], [], "", "", ""
+
+
+# ---------------------------------------------------------------------------
+# Single query handler (stateless, kept for detailed inspection)
 # ---------------------------------------------------------------------------
 
 def ask_single(question: str, strategy_label: str, top_k: int):
@@ -263,6 +422,10 @@ def ask_single(question: str, strategy_label: str, top_k: int):
     return format_answer(result), format_sources(result), format_metadata(result), react_trace
 
 
+# ---------------------------------------------------------------------------
+# Compare handler
+# ---------------------------------------------------------------------------
+
 def compare_strategies(question: str, selected_labels: list[str]):
     """Run selected strategies and return comparison table + per-strategy details."""
     if not question.strip():
@@ -277,7 +440,6 @@ def compare_strategies(question: str, selected_labels: list[str]):
         strategy = STRATEGY_MAP[label]
         results[label] = r.retrieve(question, strategy)
 
-    # Summary table
     table_lines = [
         "### Comparison Summary\n",
         "| Strategy | Chunks | Confidence | Grounded | Time (s) |",
@@ -289,7 +451,6 @@ def compare_strategies(question: str, selected_labels: list[str]):
             f"| **{label}** | {len(res.chunks)} | {res.confidence:.2%} | {grounded} | {res.execution_time:.2f} |"
         )
 
-    # Per-strategy details
     detail_lines = ["\n---\n"]
     for label, res in results.items():
         detail_lines.append(f"## {label}\n")
@@ -316,7 +477,6 @@ def export_comparison_json(question: str, selected_labels: list[str]) -> str | N
         result = r.retrieve(question, strategy)
         export["results"][label] = result.to_dict()
 
-    # Write temp file for download
     out_path = Path("/tmp/strategy_comparison.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(export, f, indent=2, default=str)
@@ -333,20 +493,17 @@ def get_graph_stats() -> str:
         toolkit = r.toolkit
         graph = toolkit._load_graph()
 
-        # Count community files
         comm_dir = toolkit.gold_path / "communities"
         comm_count = 0
         if comm_dir.exists():
             comm_count = sum(1 for _ in comm_dir.rglob("*.json"))
 
-        # Count paths
         path_file = toolkit.gold_path / "paths" / "path_index.json"
         path_count = 0
         if path_file.exists():
             with open(path_file, "r") as f:
                 path_count = len(json.load(f))
 
-        # Count embeddings
         emb_dir = toolkit.gold_path / "embeddings"
         chunk_emb = 0
         entity_emb = 0
@@ -381,68 +538,89 @@ def get_graph_stats() -> str:
 APP_CSS = """
 .container { max-width: 1400px; margin: auto; }
 .answer-box { min-height: 150px; }
+button[aria-label="share"], button[aria-label="delete"] { display: none !important; }
 """
 
 
 def create_app() -> gr.Blocks:
-    with gr.Blocks(title="Retrieval Strategy Comparison") as app:
+    with gr.Blocks(title="Email Knowledge Graph — Retrieval") as app:
         gr.Markdown(
             """
-            # Retrieval Strategy Comparison
-            Compare **Vector**, **PathRAG**, **GraphRAG**, **Hybrid**, and **ReAct** retrieval
-            over the anonymised email knowledge graph.
+            # Email Knowledge Graph — Retrieval
+            Multi-turn chat and strategy comparison over the enterprise email knowledge graph.
             """
         )
 
-        # ========================= Tab 1: Single Query =========================
-        with gr.Tab("Single Query"):
+        # ========================= Tab 1: Query (multi-turn chat) ===============
+        with gr.Tab("Query"):
+            # Hidden state for conversation history
+            conv_state = gr.State([])
+
+            # Strategy + controls at the top
+            with gr.Row():
+                chat_strategy = gr.Radio(
+                    choices=STRATEGY_LABELS,
+                    value="Hybrid",
+                    label="Strategy",
+                )
+                chat_top_k = gr.Slider(
+                    minimum=1, maximum=20, value=10, step=1,
+                    label="Top-k",
+                )
+
             with gr.Row():
                 with gr.Column(scale=3):
-                    strategy_radio = gr.Radio(
-                        choices=STRATEGY_LABELS,
-                        value="Hybrid",
-                        label="Strategy",
-                    )
-                    question_input = gr.Textbox(
-                        label="Question",
-                        placeholder="Ask a question about the email archive…",
-                        lines=2,
+                    chatbot = gr.Chatbot(
+                        show_label=False,
+                        height=480,
                     )
                     with gr.Row():
-                        top_k_slider = gr.Slider(
-                            minimum=1, maximum=20, value=10, step=1,
-                            label="Top-k chunks",
+                        chat_input = gr.Textbox(
+                            placeholder="Ask a question (follow-ups supported)…",
+                            show_label=False,
+                            scale=5,
+                            lines=1,
                         )
-                        ask_btn = gr.Button("Ask", variant="primary", scale=1)
+                        chat_send_btn = gr.Button("Send", variant="primary", scale=1)
+                    with gr.Row():
+                        gr.Column(scale=5)  # spacer
+                        chat_clear_btn = gr.Button("Clear", variant="secondary", size="sm", scale=1)
 
-                    answer_output = gr.Markdown(label="Answer", elem_classes=["answer-box"])
+                    rewrite_display = gr.Markdown()
 
                 with gr.Column(scale=2):
-                    sources_output = gr.Markdown(label="Sources")
-                    meta_output = gr.Markdown(label="Metadata")
-
-            with gr.Accordion("ReAct Reasoning Trace", open=False):
-                react_output = gr.Markdown()
+                    chat_sources = gr.Markdown(label="Sources")
+                    chat_metadata = gr.Markdown(label="Metadata")
 
             gr.Examples(
                 examples=generate_examples(),
-                inputs=[question_input],
+                inputs=[chat_input],
                 label="Example Questions",
             )
 
-            # Events
-            ask_btn.click(
-                fn=ask_single,
-                inputs=[question_input, strategy_radio, top_k_slider],
-                outputs=[answer_output, sources_output, meta_output, react_output],
+            # Chat events
+            chat_send_btn.click(
+                fn=chat_respond,
+                inputs=[chat_input, chatbot, conv_state, chat_strategy, chat_top_k],
+                outputs=[chatbot, conv_state, chat_sources, chat_metadata, rewrite_display],
+            ).then(
+                fn=lambda: "",
+                outputs=[chat_input],
             )
-            question_input.submit(
-                fn=ask_single,
-                inputs=[question_input, strategy_radio, top_k_slider],
-                outputs=[answer_output, sources_output, meta_output, react_output],
+            chat_input.submit(
+                fn=chat_respond,
+                inputs=[chat_input, chatbot, conv_state, chat_strategy, chat_top_k],
+                outputs=[chatbot, conv_state, chat_sources, chat_metadata, rewrite_display],
+            ).then(
+                fn=lambda: "",
+                outputs=[chat_input],
+            )
+            chat_clear_btn.click(
+                fn=clear_chat,
+                outputs=[chatbot, conv_state, chat_sources, chat_metadata, rewrite_display],
             )
 
-        # ========================= Tab 2: Compare Strategies ====================
+        # ========================= Tab 3: Compare Strategies ====================
         with gr.Tab("Compare Strategies"):
             compare_question = gr.Textbox(
                 label="Question",
@@ -477,12 +655,6 @@ def create_app() -> gr.Blocks:
                 inputs=[compare_question, strategy_checks],
                 outputs=[export_file],
             )
-
-        # ========================= Footer: Graph Stats =========================
-        with gr.Accordion("Knowledge Graph Statistics", open=False):
-            stats_output = gr.Markdown(value=get_graph_stats)
-            refresh_btn = gr.Button("Refresh", size="sm")
-            refresh_btn.click(fn=get_graph_stats, outputs=stats_output)
 
         gr.Markdown(
             """
@@ -519,16 +691,13 @@ def main():
     args = parse_args()
     data_root = Path("./data")
 
-    # Resolve gold path
     if args.gold:
         _gold_path = args.gold
     elif args.mode:
         _gold_path = str(data_root / f"gold_{args.mode}")
     else:
-        # Default to local
         _gold_path = str(data_root / "gold_local")
 
-    # Resolve silver path
     if args.silver:
         _silver_path = args.silver
     elif args.mode:
@@ -543,7 +712,7 @@ def main():
         sys.exit(1)
 
     print("\n" + "=" * 60)
-    print("Retrieval Strategy Comparison")
+    print("Email Knowledge Graph — Retrieval")
     print("=" * 60)
     print(f"  Mode:   {_mode}")
     print(f"  Gold:   {_gold_path}")

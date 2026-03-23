@@ -98,7 +98,7 @@ class SemanticChunker:
     def __init__(
         self,
         strategy: ChunkingStrategy = ChunkingStrategy.RECURSIVE,
-        chunk_size: int = 512,
+        chunk_size: int = 1024,
         chunk_overlap: int = 50,
         min_chunk_size: int = 100,
         encoding_name: str = "cl100k_base"  # GPT-4/text-embedding-3 encoding
@@ -613,7 +613,7 @@ class SemanticChunker:
 def chunk_text(
     text: str,
     doc_id: str,
-    chunk_size: int = 512,
+    chunk_size: int = 1024,
     overlap: int = 50
 ) -> List[Chunk]:
     """

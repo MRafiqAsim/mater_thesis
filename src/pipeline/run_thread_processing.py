@@ -132,8 +132,8 @@ Examples:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=512,
-        help="Chunk size in tokens (default: 512)"
+        default=1024,
+        help="Chunk size in tokens (default: 1024)"
     )
 
     parser.add_argument(
@@ -378,7 +378,8 @@ Examples:
     print(f"  - Multi-email:       {stats['multi_email_threads']}")
     print(f"  - Single email:      {stats['single_emails']}")
     print(f"Chunks created:        {stats['chunks_created']}")
-    print(f"Summaries generated:   {stats['summaries_generated']}")
+    print(f"Thread summaries:      {stats['summaries_generated']}")
+    print(f"Email summaries:       {stats.get('email_summaries_generated', 0)}")
     print(f"PII entities detected: {stats['pii_detected']}")
     print(f"KG entities extracted: {stats['kg_entities_extracted']}")
     print(f"Relationships extracted: {stats['kg_relationships_extracted']}")
@@ -389,13 +390,12 @@ Examples:
     print(f"Threads personal:      {stats.get('threads_skipped_personal', 0)} (skipped)")
     print(f"Emails not personal:   {stats.get('emails_not_personal', 0)}")
     print(f"Emails personal:       {stats.get('emails_skipped_personal', 0)} (skipped)")
+    print(f"Emails empty body:     {stats.get('emails_skipped_empty', 0)} (skipped)")
     print(f"Errors:                {stats['errors']}")
 
     print(f"\nOutput:")
     print(f"  Not personal:     {silver_path}/not_personal/")
-    print(f"    Thread chunks:    not_personal/thread_chunks/")
-    print(f"    Email chunks:     not_personal/email_chunks/")
-    print(f"    Email summaries:  not_personal/email_summaries/")
+    print(f"    Email chunks:     not_personal/email_chunks/ (summary in chunk)")
     print(f"    Thread summaries: not_personal/thread_summaries/")
     print(f"  Personal:         {silver_path}/personal/")
     print(f"  Processing mode:  {args.mode.upper()}")

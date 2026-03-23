@@ -203,8 +203,9 @@ class HybridRetriever:
         answer = ""
         is_grounded = True
         missing_info = None
+        gen_tokens = 0
         if self.config.use_llm_answer and chunks:
-            answer, is_grounded, missing_info = self._generate_answer(query, chunks[:self.config.max_context_chunks])
+            answer, is_grounded, missing_info, gen_tokens = self._generate_answer(query, chunks[:self.config.max_context_chunks])
 
         return RetrievalResult(
             query=query,
@@ -213,7 +214,7 @@ class HybridRetriever:
             strategy="vector",
             confidence=self._calculate_confidence(chunks),
             sources=[c.get("chunk_id", "") for c in chunks],
-            metadata={"tool_message": tool_result.message},
+            metadata={"tool_message": tool_result.message, "total_tokens": gen_tokens},
             is_grounded=is_grounded,
             missing_info=missing_info,
         )
@@ -249,13 +250,14 @@ class HybridRetriever:
         answer = ""
         is_grounded = True
         missing_info = None
+        gen_tokens = 0
         if self.config.use_llm_answer and chunks:
             # Include path information in context
             path_context = "\n".join([
                 f"Path: {p.get('description', '')}"
                 for p in path_result.data[:3]
             ])
-            answer, is_grounded, missing_info = self._generate_answer(
+            answer, is_grounded, missing_info, gen_tokens = self._generate_answer(
                 query,
                 chunks[:self.config.max_context_chunks],
                 extra_context=f"Reasoning paths found:\n{path_context}"
@@ -270,7 +272,8 @@ class HybridRetriever:
             sources=[c.get("chunk_id", "") for c in chunks],
             metadata={
                 "paths_found": len(path_result.data),
-                "entities_used": entities
+                "entities_used": entities,
+                "total_tokens": gen_tokens,
             },
             is_grounded=is_grounded,
             missing_info=missing_info,
@@ -376,8 +379,9 @@ class HybridRetriever:
         answer = ""
         is_grounded = True
         missing_info = None
+        gen_tokens = 0
         if self.config.use_llm_answer and (chunks or extra_context):
-            answer, is_grounded, missing_info = self._generate_answer(
+            answer, is_grounded, missing_info, gen_tokens = self._generate_answer(
                 query,
                 chunks[:self.config.max_context_chunks],
                 extra_context=extra_context,
@@ -398,6 +402,7 @@ class HybridRetriever:
                 "points_count": len(points),
                 "entity_count": result.data.get("entity_count", 0),
                 "tool_message": result.message,
+                "total_tokens": gen_tokens,
             },
             is_grounded=is_grounded,
             missing_info=missing_info,
@@ -457,6 +462,7 @@ class HybridRetriever:
         answer = ""
         is_grounded = True
         missing_info = None
+        gen_tokens = 0
         if self.config.use_llm_answer and final_chunks:
             # Include context from all strategies
             extra_context = ""
@@ -488,7 +494,7 @@ class HybridRetriever:
                 for summary in graphrag_result.metadata["community_summaries"][:2]:
                     extra_context += f"- {summary}\n"
 
-            answer, is_grounded, missing_info = self._generate_answer(
+            answer, is_grounded, missing_info, gen_tokens = self._generate_answer(
                 query,
                 final_chunks[:self.config.max_context_chunks],
                 extra_context=extra_context
@@ -505,7 +511,8 @@ class HybridRetriever:
                 "vector_chunks": len(vector_result.chunks),
                 "pathrag_chunks": len(pathrag_result.chunks),
                 "graphrag_chunks": len(graphrag_result.chunks),
-                "fusion_scores": {k: v[1] for k, v in list(chunk_scores.items())[:10]}
+                "fusion_scores": {k: v[1] for k, v in list(chunk_scores.items())[:10]},
+                "total_tokens": gen_tokens,
             },
             is_grounded=is_grounded,
             missing_info=missing_info,
@@ -558,8 +565,9 @@ class HybridRetriever:
         answer = ""
         is_grounded = True
         missing_info = None
+        gen_tokens = 0
         if self.config.use_llm_answer and (chunks or extra_context):
-            answer, is_grounded, missing_info = self._generate_answer(
+            answer, is_grounded, missing_info, gen_tokens = self._generate_answer(
                 query,
                 chunks[:self.config.max_context_chunks],
                 extra_context=extra_context,
@@ -579,7 +587,7 @@ class HybridRetriever:
                     for s in react_result.sources],
             metadata={
                 "steps": len(react_result.steps),
-                "total_tokens": react_result.total_tokens,
+                "total_tokens": react_result.total_tokens + gen_tokens,
                 "reasoning_trace": [s.to_dict() for s in react_result.steps]
             },
             is_grounded=is_grounded,
@@ -593,7 +601,7 @@ class HybridRetriever:
 
         subjects = set()
         silver = Path(self.silver_path)
-        for folder in ["not_personal/thread_chunks", "not_personal/email_chunks"]:
+        for folder in ["not_personal/email_chunks"]:
             folder_path = silver / folder
             if not folder_path.exists():
                 continue
@@ -764,7 +772,6 @@ class HybridRetriever:
 
         # 1. Search Silver layer for sibling chunks
         search_dirs = [
-            self.silver_path / "not_personal" / "thread_chunks",
             self.silver_path / "not_personal" / "email_chunks",
             self.silver_path / "not_personal" / "attachment_chunks",
         ]
@@ -784,7 +791,7 @@ class HybridRetriever:
                     if tid in thread_ids and cid not in existing_ids:
                         sibling_chunks.append({
                             "chunk_id": cid,
-                            "text": chunk_data.get("text_english") or chunk_data.get("text_anonymized", ""),
+                            "text": chunk_data.get("summary") or chunk_data.get("text_english") or chunk_data.get("text_anonymized", ""),
                             "thread_id": tid,
                             "thread_subject": chunk_data.get("thread_subject"),
                             "source_type": chunk_data.get("source_type", "email"),
@@ -884,26 +891,27 @@ class HybridRetriever:
         query: str,
         chunks: List[Dict[str, Any]],
         extra_context: str = ""
-    ) -> Tuple[str, bool, Optional[str]]:
+    ) -> Tuple[str, bool, Optional[str], int]:
         """
         Generate answer using LLM with grounding check.
         Falls back to extractive summary in local mode.
 
         Returns:
-            (answer, is_grounded, missing_info)
+            (answer, is_grounded, missing_info, total_tokens)
         """
         if not chunks and not extra_context:
-            return "", True, None
+            return "", True, None, 0
 
         # Local mode: use BART summarizer or extractive fallback
         if not self.llm_client:
-            return self._generate_local_answer(query, chunks, extra_context)
+            answer, is_grounded, missing_info = self._generate_local_answer(query, chunks, extra_context)
+            return answer, is_grounded, missing_info, 0
 
 
         # Build context from chunks — label email vs attachment for LLM clarity
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
-            text = chunk.get("text", chunk.get("text_english") or chunk.get("text_anonymized", ""))
+            text = chunk.get("text", chunk.get("summary") or chunk.get("text_english") or chunk.get("text_anonymized", ""))
             chunk_id = chunk.get("chunk_id", "unknown")
             thread = chunk.get("thread_subject", "")
             source_type = chunk.get("source_type", "email")
@@ -940,9 +948,10 @@ class HybridRetriever:
                 max_tokens=get_prompt("retrieval", "generation", "max_tokens"),
             )
             answer = response.choices[0].message.content or ""
+            total_tokens = getattr(response.usage, 'total_tokens', 0) if response.usage else 0
         except Exception as e:
             logger.error(f"Answer generation failed: {e}")
-            return "", True, None
+            return "", True, None, 0
 
         # Grounding check
         is_grounded = True
@@ -961,7 +970,7 @@ class HybridRetriever:
                 missing_info = "Required information not found in knowledge base"
                 break
 
-        return answer, is_grounded, missing_info
+        return answer, is_grounded, missing_info, total_tokens
 
     def _check_grounding(self, answer: str) -> Tuple[bool, Optional[str]]:
         """Check if an answer indicates missing information."""
@@ -988,7 +997,7 @@ class HybridRetriever:
         # Combine chunk texts
         texts = []
         for chunk in chunks[:5]:
-            text = chunk.get("text", chunk.get("text_english") or chunk.get("text_anonymized", ""))
+            text = chunk.get("text", chunk.get("summary") or chunk.get("text_english") or chunk.get("text_anonymized", ""))
             thread = chunk.get("thread_subject", "")
             if thread:
                 texts.append(f"[{thread}] {text}")
@@ -1012,7 +1021,7 @@ class HybridRetriever:
         # Extractive fallback: return first few chunk texts
         answer_parts = []
         for chunk in chunks[:3]:
-            text = chunk.get("text", chunk.get("text_english") or chunk.get("text_anonymized", ""))
+            text = chunk.get("text", chunk.get("summary") or chunk.get("text_english") or chunk.get("text_anonymized", ""))
             thread = chunk.get("thread_subject", "")
             if thread:
                 answer_parts.append(f"**{thread}**: {text}")

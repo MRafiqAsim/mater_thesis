@@ -279,7 +279,7 @@ class EmbeddingGenerator:
         silver_dir = Path(silver_path)
         chunk_files = []
 
-        for pattern in ["not_personal/thread_chunks/*.json", "not_personal/email_chunks/*.json",
+        for pattern in ["not_personal/email_chunks/*.json",
                        "not_personal/attachment_chunks/*.json"]:
             chunk_files.extend(silver_dir.glob(pattern))
 
@@ -295,8 +295,13 @@ class EmbeddingGenerator:
                     chunk_data = json.load(f)
 
                 chunk_id = chunk_data.get("chunk_id", chunk_file.stem)
-                # Prefer text_english (multilingual normalized), fall back to text_anonymized
-                text = chunk_data.get("text_english") or chunk_data.get("text_anonymized" if use_anonymized else "text_original", "")
+                source_type = chunk_data.get("source_type", "email")
+                # Email chunks: use summary (work-focused, personal chatter stripped)
+                # Attachment chunks: use text_english (documents are already clean)
+                if source_type == "email":
+                    text = chunk_data.get("summary") or chunk_data.get("text_english") or chunk_data.get("text_anonymized" if use_anonymized else "text_original", "")
+                else:
+                    text = chunk_data.get("text_english") or chunk_data.get("text_anonymized" if use_anonymized else "text_original", "")
 
                 if text:
                     chunk_ids.append(chunk_id)
