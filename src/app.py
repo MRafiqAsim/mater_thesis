@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
+import tiktoken
+
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -66,7 +68,119 @@ FALLBACK_EXAMPLES = [
     ["Who are the main contacts and what roles do they play?"],
 ]
 
-MAX_HISTORY_TURNS = 5  # Max conversation turns to include in query rewriting
+# ---------------------------------------------------------------------------
+# Conversation context management — token-based compaction
+# ---------------------------------------------------------------------------
+_enc = tiktoken.encoding_for_model("gpt-4o")
+
+MAX_CONTEXT_TOKENS = 128_000      # GPT-4o context window
+RESPONSE_RESERVE = 4_000          # Tokens reserved for LLM response
+COMPACTION_THRESHOLD = 0.90       # Trigger compaction at 90% of budget
+CONTEXT_BUDGET = MAX_CONTEXT_TOKENS - RESPONSE_RESERVE
+# Approximate fixed overhead per call (system prompt + chunk context + query)
+FIXED_OVERHEAD_ESTIMATE = 6_000
+
+
+def count_tokens(text: str) -> int:
+    """Count tokens using GPT-4o tokenizer."""
+    return len(_enc.encode(text))
+
+
+def build_history_text(conv_state: List[Dict[str, str]]) -> str:
+    """Build a formatted history string from conversation state."""
+    lines = []
+    summary = conv_state[0].get("_compaction_summary", "") if conv_state else ""
+    if summary:
+        lines.append(f"[Prior conversation summary]: {summary}")
+    for turn in conv_state:
+        if "_compaction_summary" in turn:
+            continue
+        lines.append(f"User: {turn['user']}")
+        lines.append(f"Assistant: {turn['answer']}")
+    return "\n".join(lines)
+
+
+def history_token_count(conv_state: List[Dict[str, str]]) -> int:
+    """Count total tokens in conversation history."""
+    return count_tokens(build_history_text(conv_state))
+
+
+def compact_history(conv_state: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], bool]:
+    """
+    Gradually compact conversation history — only summarize the oldest batch
+    of turns needed to get back under the token threshold.
+
+    Strategy: summarize the oldest half of real turns, keep the rest verbatim.
+    This preserves recent context while compressing older exchanges.
+    Returns (new_conv_state, was_compacted).
+    """
+    real_turns = [t for t in conv_state if "_compaction_summary" not in t]
+    if len(real_turns) < 4:
+        return conv_state, False
+
+    # Summarize the oldest half, keep the recent half verbatim
+    split_point = len(real_turns) // 2
+    older = real_turns[:split_point]
+    recent = real_turns[split_point:]
+
+    # Build text to summarize — include previous compaction summary for continuity
+    older_text_parts = []
+    if conv_state and "_compaction_summary" in conv_state[0]:
+        older_text_parts.append(f"Previous summary: {conv_state[0]['_compaction_summary']}")
+    for turn in older:
+        older_text_parts.append(f"User: {turn['user']}")
+        older_text_parts.append(f"Assistant: {turn['answer']}")
+    older_text = "\n".join(older_text_parts)
+
+    # Scale summary length to the amount of content being compressed
+    older_tokens = count_tokens(older_text)
+    # Target: ~25% of original size, capped between 200-2000 tokens
+    target_summary_tokens = max(200, min(2000, older_tokens // 4))
+
+    r = get_retriever()
+    if not r.llm_client:
+        summary_text = f"Conversation covered {len(older)} earlier exchanges."
+        return [{"_compaction_summary": summary_text}] + recent, True
+
+    try:
+        response = r.llm_client.chat.completions.create(
+            model=r.config.answer_model,
+            messages=[
+                {"role": "system", "content": (
+                    "Summarize this conversation history. Preserve all key topics, "
+                    "entity names (PERSON_001, ORG_003 etc.), specific findings, and "
+                    "conclusions discussed. Keep enough detail that a follow-up question "
+                    "about any topic mentioned can still be answered accurately."
+                )},
+                {"role": "user", "content": older_text},
+            ],
+            temperature=0.0,
+            max_tokens=target_summary_tokens,
+        )
+        summary_text = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"Compaction summary failed: {e}")
+        summary_text = f"Conversation covered {len(older)} earlier exchanges."
+
+    new_state = [{"_compaction_summary": summary_text}] + recent
+    summary_tokens = count_tokens(summary_text)
+    logger.info(
+        f"Compacted {len(older)} turns ({older_tokens} tokens) into summary "
+        f"({summary_tokens} tokens), kept {len(recent)} recent turns verbatim"
+    )
+    return new_state, True
+
+
+def maybe_compact(conv_state: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], bool]:
+    """Check token budget and compact if needed. Returns (state, was_compacted)."""
+    hist_tokens = history_token_count(conv_state)
+    available = CONTEXT_BUDGET - FIXED_OVERHEAD_ESTIMATE
+    threshold = available * COMPACTION_THRESHOLD
+
+    if hist_tokens > threshold:
+        logger.info(f"History tokens ({hist_tokens}) exceed {COMPACTION_THRESHOLD:.0%} of budget ({threshold:.0f}). Compacting...")
+        return compact_history(conv_state)
+    return conv_state, False
 
 
 def get_retriever() -> HybridRetriever:
@@ -199,15 +313,8 @@ def rewrite_query(
     if not is_follow_up and len(question.split()) > 4:
         return question
 
-    # Build history string (last N turns)
-    recent = history[-MAX_HISTORY_TURNS:]
-    history_lines = []
-    for turn in recent:
-        history_lines.append(f"User: {turn['user']}")
-        # Truncate long answers to keep rewriter context small
-        answer = turn["answer"][:500]
-        history_lines.append(f"Assistant: {answer}")
-    history_text = "\n".join(history_lines)
+    # Build history string from full conversation state (already compacted if needed)
+    history_text = build_history_text(history)
 
     # Use LLM to rewrite
     r = get_retriever()
@@ -352,23 +459,26 @@ def chat_respond(
         (updated_chat_history, updated_conv_state, sources_md, metadata_md, rewrite_display)
     """
     if not message.strip():
-        return chat_history, conv_state, "", "", ""
+        return chat_history, conv_state, "", "", "", ""
 
     strategy = STRATEGY_MAP[strategy_label]
     r = get_retriever()
     r.config.top_k_per_strategy = int(top_k)
     r.config.final_top_k = int(top_k)
 
-    # Step 1: Rewrite follow-up query using conversation history
+    # Step 1: Compact history if approaching token budget
+    conv_state, was_compacted = maybe_compact(conv_state)
+
+    # Step 2: Rewrite follow-up query using conversation history
     rewritten = rewrite_query(message, conv_state)
     rewrite_display = ""
     if rewritten != message:
         rewrite_display = f"*Rewritten:* {rewritten}"
 
-    # Step 2: Retrieve using the (possibly rewritten) query
-    result = r.retrieve(rewritten, strategy)
+    # Step 3: Retrieve using the (possibly rewritten) query
+    result = r.retrieve(rewritten, strategy, conversation_history=build_history_text(conv_state))
 
-    # Step 3: Format response
+    # Step 4: Format response
     answer = format_answer(result)
     sources = format_sources(result)
     metadata = format_metadata(result, rewritten_query=rewritten, original_query=message)
@@ -378,7 +488,7 @@ def chat_respond(
         if trace and "No reasoning trace" not in trace:
             metadata += "\n\n" + trace
 
-    # Step 4: Update conversation state
+    # Step 5: Update conversation state
     conv_state.append({
         "user": message,
         "rewritten": rewritten,
@@ -387,16 +497,21 @@ def chat_respond(
         "sources_count": len(result.chunks),
     })
 
-    # Step 5: Update chat display (messages format for Gradio 6.x)
+    # Step 6: Update chat display (messages format for Gradio 6.x)
     chat_history.append({"role": "user", "content": message})
     chat_history.append({"role": "assistant", "content": answer})
 
-    return chat_history, conv_state, sources, metadata, rewrite_display
+    # Step 7: Signal compaction to user
+    compaction_notice = ""
+    if was_compacted:
+        compaction_notice = "Earlier conversation was summarized to maintain quality."
+
+    return chat_history, conv_state, sources, metadata, rewrite_display, compaction_notice
 
 
 def clear_chat():
     """Reset chat history and conversation state."""
-    return [], [], "", "", ""
+    return [], [], "", "", "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +702,7 @@ def create_app() -> gr.Blocks:
                         chat_clear_btn = gr.Button("Clear", variant="secondary", size="sm", scale=1)
 
                     rewrite_display = gr.Markdown()
+                    compaction_notice = gr.Markdown()
 
                 with gr.Column(scale=2):
                     chat_sources = gr.Markdown(label="Sources")
@@ -599,10 +715,11 @@ def create_app() -> gr.Blocks:
             )
 
             # Chat events
+            chat_outputs = [chatbot, conv_state, chat_sources, chat_metadata, rewrite_display, compaction_notice]
             chat_send_btn.click(
                 fn=chat_respond,
                 inputs=[chat_input, chatbot, conv_state, chat_strategy, chat_top_k],
-                outputs=[chatbot, conv_state, chat_sources, chat_metadata, rewrite_display],
+                outputs=chat_outputs,
             ).then(
                 fn=lambda: "",
                 outputs=[chat_input],
@@ -610,14 +727,14 @@ def create_app() -> gr.Blocks:
             chat_input.submit(
                 fn=chat_respond,
                 inputs=[chat_input, chatbot, conv_state, chat_strategy, chat_top_k],
-                outputs=[chatbot, conv_state, chat_sources, chat_metadata, rewrite_display],
+                outputs=chat_outputs,
             ).then(
                 fn=lambda: "",
                 outputs=[chat_input],
             )
             chat_clear_btn.click(
                 fn=clear_chat,
-                outputs=[chatbot, conv_state, chat_sources, chat_metadata, rewrite_display],
+                outputs=chat_outputs,
             )
 
         # ========================= Tab 3: Compare Strategies ====================

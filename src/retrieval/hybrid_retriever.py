@@ -161,7 +161,8 @@ class HybridRetriever:
     def retrieve(
         self,
         query: str,
-        strategy: RetrievalStrategy = RetrievalStrategy.HYBRID
+        strategy: RetrievalStrategy = RetrievalStrategy.HYBRID,
+        conversation_history: str = "",
     ) -> RetrievalResult:
         """
         Retrieve relevant information for a query.
@@ -169,11 +170,15 @@ class HybridRetriever:
         Args:
             query: The user's question
             strategy: Which retrieval strategy to use
+            conversation_history: Formatted conversation history for answer generation
 
         Returns:
             RetrievalResult with answer and supporting chunks
         """
         start_time = datetime.now()
+
+        # Store history for use by _generate_answer during this call
+        self._conversation_history = conversation_history
 
         if strategy == RetrievalStrategy.VECTOR:
             result = self._vector_retrieve(query)
@@ -186,6 +191,7 @@ class HybridRetriever:
         else:  # HYBRID
             result = self._hybrid_retrieve(query)
 
+        self._conversation_history = ""
         result.execution_time = (datetime.now() - start_time).total_seconds()
         return result
 
@@ -937,13 +943,18 @@ class HybridRetriever:
             question=query,
         )
 
+        # Build messages — include conversation history if available
+        messages = [{"role": "system", "content": system_prompt}]
+        conv_history = getattr(self, "_conversation_history", "")
+        if conv_history:
+            messages.append({"role": "user", "content": f"Conversation so far:\n{conv_history}"})
+            messages.append({"role": "assistant", "content": "I have the conversation context. Please provide the new question and evidence."})
+        messages.append({"role": "user", "content": user_prompt})
+
         try:
             response = self.llm_client.chat.completions.create(
                 model=self.config.answer_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                messages=messages,
                 temperature=get_prompt("retrieval", "generation", "temperature"),
                 max_tokens=get_prompt("retrieval", "generation", "max_tokens"),
             )
