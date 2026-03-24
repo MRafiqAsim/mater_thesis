@@ -332,6 +332,23 @@ class ReActRetriever:
                     messages.append({"role": "assistant", "content": response_text})
                     messages.append({"role": "user", "content": f"Observation: {observation}"})
 
+                elif thought and not action:
+                    # LLM provided a thought but no action or final answer —
+                    # it's done reasoning. Generate summary from what we have.
+                    steps.append(step)
+                    logger.info(f"Step {step_num}: No action, treating as completion")
+                    summary_answer = self._generate_summary_answer(question, steps, sources)
+                    execution_time = (datetime.now() - start_time).total_seconds()
+                    return ReActResult(
+                        query=question,
+                        answer=summary_answer,
+                        steps=steps,
+                        sources=sources,
+                        total_tokens=total_tokens,
+                        execution_time=execution_time,
+                        success=True,
+                    )
+
                 steps.append(step)
 
             except Exception as e:

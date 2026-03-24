@@ -723,7 +723,9 @@ class RetrievalToolkit:
                         "thread_subject": chunk_data.get("thread_subject"),
                         "source_type": chunk_data.get("source_type", "email"),
                         "source_attachment_filename": chunk_data.get("source_attachment_filename", ""),
-                        "has_attachments": chunk_data.get("has_attachments", False)
+                        "has_attachments": chunk_data.get("has_attachments", False),
+                        "sent_timestamp": chunk_data.get("sent_timestamp", ""),
+                        "received_timestamp": chunk_data.get("received_timestamp", ""),
                     })
 
                 if len(detailed_results) >= top_k:
@@ -975,12 +977,24 @@ class RetrievalToolkit:
 
     def temporal_filter(
         self,
-        chunk_ids: List[str],
+        chunk_ids: List[str] = None,
         start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
+        date_range: Optional[str] = None,
+        **kwargs,
     ) -> ToolResult:
         """Filter chunks by date range."""
         start_time = datetime.now()
+
+        # Handle LLM passing date_range instead of start_date/end_date
+        if date_range and not start_date and not end_date:
+            from .date_filter import extract_date_range
+            dr = extract_date_range(date_range)
+            if dr:
+                start_date = dr.start
+                end_date = dr.end
+
+        chunk_ids = chunk_ids or []
 
         try:
             filtered = []
@@ -990,9 +1004,8 @@ class RetrievalToolkit:
                 if not chunk_data:
                     continue
 
-                # Extract date from chunk (would need to parse from text or metadata)
-                # For now, use processing_time or extract from thread_id
-                chunk_date = chunk_data.get("processing_time", "")[:10]
+                # Use received_timestamp (preferred) or sent_timestamp from Bronze
+                chunk_date = (chunk_data.get("received_timestamp", "") or chunk_data.get("sent_timestamp", ""))[:10]
 
                 include = True
                 if start_date and chunk_date < start_date:

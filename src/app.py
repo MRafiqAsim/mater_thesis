@@ -95,6 +95,9 @@ def build_history_text(conv_state: List[Dict[str, str]]) -> str:
     for turn in conv_state:
         if "_compaction_summary" in turn:
             continue
+        # Skip internal markers (identity, pending state)
+        if "user" not in turn:
+            continue
         lines.append(f"User: {turn['user']}")
         lines.append(f"Assistant: {turn['answer']}")
     return "\n".join(lines)
@@ -114,7 +117,7 @@ def compact_history(conv_state: List[Dict[str, str]]) -> Tuple[List[Dict[str, st
     This preserves recent context while compressing older exchanges.
     Returns (new_conv_state, was_compacted).
     """
-    real_turns = [t for t in conv_state if "_compaction_summary" not in t]
+    real_turns = [t for t in conv_state if "user" in t]
     if len(real_turns) < 4:
         return conv_state, False
 
@@ -399,25 +402,31 @@ def format_metadata(result: RetrievalResult, rewritten_query: str = "", original
 
 
 def format_react_trace(result: RetrievalResult) -> str:
-    """Format ReAct reasoning steps as a markdown table."""
+    """Format ReAct reasoning steps — full text, no truncation."""
     steps = result.metadata.get("reasoning_trace", [])
     if not steps:
         return "*No reasoning trace available.*"
 
-    lines = [
-        "### ReAct Reasoning Trace\n",
-        "| Step | Thought | Action | Observation |",
-        "|------|---------|--------|-------------|",
-    ]
+    lines = ["### ReAct Reasoning Trace\n"]
+
     for s in steps:
-        thought = (s.get("thought") or "")[:120].replace("|", "\\|").replace("\n", " ")
+        step_num = s.get("step_number", "?")
+        thought_raw = (s.get("thought") or "").strip().replace("\n", " ")
+        thought = thought_raw[:250] + "..." if len(thought_raw) > 250 else thought_raw
         action = s.get("action") or "—"
-        obs = (s.get("observation") or "")[:100].replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| {s.get('step_number', '?')} | {thought} | {action} | {obs} |")
+        obs_raw = (s.get("observation") or "").strip().replace("\n", " ")
+        obs = obs_raw[:250] + "..." if len(obs_raw) > 250 else obs_raw
+
+        lines.append(f"**Step {step_num}** — `{action}`\n")
+        if thought:
+            lines.append(f"**Thought:** {thought}\n")
+        if obs:
+            lines.append(f"**Observation:** {obs}\n")
+        lines.append("---\n")
 
     total_tokens = result.metadata.get("total_tokens", 0)
     if total_tokens:
-        lines.append(f"\n*Total tokens: {total_tokens}*")
+        lines.append(f"*Total tokens: {total_tokens}*")
 
     return "\n".join(lines)
 
@@ -456,9 +465,45 @@ def chat_respond(
         top_k: Number of chunks to retrieve
 
     Returns:
-        (updated_chat_history, updated_conv_state, sources_md, metadata_md, rewrite_display)
+        (updated_chat_history, updated_conv_state, sources_md, metadata_md, rewrite_display, compaction_notice)
     """
     if not message.strip():
+        return chat_history, conv_state, "", "", "", ""
+
+    # --- Identity handling (before retrieval) ---
+    first_person_signals = [" i ", " my ", " me ", "i worked", "i sent", "i received", "i was"]
+    msg_padded = f" {message.lower()} "
+    has_first_person = any(s in msg_padded for s in first_person_signals)
+
+    # Check if any prior turn established identity (user said their name)
+    has_identity = any(
+        t.get("_is_identity_response") for t in conv_state
+    )
+
+    # If pending identity response — user is providing their name
+    if any(t.get("_awaiting_identity") for t in conv_state):
+        # Store the name, replay the original query
+        original = next((t["_original_query"] for t in conv_state if t.get("_awaiting_identity")), "")
+        conv_state = [t for t in conv_state if not t.get("_awaiting_identity")]
+        conv_state.append({
+            "user": original,
+            "answer": "Could you tell me your name as it appears in the emails?",
+        })
+        conv_state.append({
+            "user": message.strip(),
+            "answer": f"OK, noted. Your name is {message.strip()}.",
+            "_is_identity_response": True,
+        })
+        # The rewriter will now see the name in history and resolve "I" in the original query
+        message = original
+
+    # First-person with no identity — ask before retrieving
+    elif has_first_person and not has_identity:
+        conv_state.append({"_awaiting_identity": True, "_original_query": message})
+        chat_history.append({
+            "role": "assistant",
+            "content": "Could you tell me your name as it appears in the emails?",
+        })
         return chat_history, conv_state, "", "", "", ""
 
     strategy = STRATEGY_MAP[strategy_label]
@@ -480,8 +525,13 @@ def chat_respond(
 
     # Step 4: Format response
     answer = format_answer(result)
-    sources = format_sources(result)
-    metadata = format_metadata(result, rewritten_query=rewritten, original_query=message)
+
+    # If LLM is asking for clarification (e.g. user identity), hide sources/metadata
+    clarification_signals = ["tell me your name", "your name as it appears", "who you are"]
+    is_clarification = any(s in answer.lower() for s in clarification_signals)
+
+    sources = "" if is_clarification else format_sources(result)
+    metadata = "" if is_clarification else format_metadata(result, rewritten_query=rewritten, original_query=message)
 
     if strategy == RetrievalStrategy.REACT:
         trace = format_react_trace(result)
@@ -497,8 +547,7 @@ def chat_respond(
         "sources_count": len(result.chunks),
     })
 
-    # Step 6: Update chat display (messages format for Gradio 6.x)
-    chat_history.append({"role": "user", "content": message})
+    # Step 6: Update chat display (user message already added by show_user_message)
     chat_history.append({"role": "assistant", "content": answer})
 
     # Step 7: Signal compaction to user
@@ -654,6 +703,7 @@ APP_CSS = """
 .container { max-width: 1400px; margin: auto; }
 .answer-box { min-height: 150px; }
 button[aria-label="share"], button[aria-label="delete"] { display: none !important; }
+.react-trace { max-height: 600px; overflow-y: auto; }
 """
 
 
@@ -714,23 +764,35 @@ def create_app() -> gr.Blocks:
                 label="Example Questions",
             )
 
-            # Chat events
+            # Chat events — show user message immediately, then process
+            pending_msg = gr.State("")  # Holds message while processing
+            chat_inputs = [pending_msg, chatbot, conv_state, chat_strategy, chat_top_k]
             chat_outputs = [chatbot, conv_state, chat_sources, chat_metadata, rewrite_display, compaction_notice]
+
+            def show_user_message(message, chat_history):
+                """Show user message in chat and clear input."""
+                if not message.strip():
+                    return "", chat_history, ""
+                chat_history.append({"role": "user", "content": message})
+                return "", chat_history, message
+
             chat_send_btn.click(
-                fn=chat_respond,
-                inputs=[chat_input, chatbot, conv_state, chat_strategy, chat_top_k],
-                outputs=chat_outputs,
+                fn=show_user_message,
+                inputs=[chat_input, chatbot],
+                outputs=[chat_input, chatbot, pending_msg],
             ).then(
-                fn=lambda: "",
-                outputs=[chat_input],
+                fn=chat_respond,
+                inputs=chat_inputs,
+                outputs=chat_outputs,
             )
             chat_input.submit(
-                fn=chat_respond,
-                inputs=[chat_input, chatbot, conv_state, chat_strategy, chat_top_k],
-                outputs=chat_outputs,
+                fn=show_user_message,
+                inputs=[chat_input, chatbot],
+                outputs=[chat_input, chatbot, pending_msg],
             ).then(
-                fn=lambda: "",
-                outputs=[chat_input],
+                fn=chat_respond,
+                inputs=chat_inputs,
+                outputs=chat_outputs,
             )
             chat_clear_btn.click(
                 fn=clear_chat,

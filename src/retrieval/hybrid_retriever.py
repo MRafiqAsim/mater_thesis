@@ -18,6 +18,7 @@ from prompt_loader import get_prompt, get_section, format_prompt
 
 from .retrieval_tools import RetrievalToolkit, ToolResult
 from .react_retriever import ReActRetriever, ReActResult
+from .date_filter import extract_date_range, filter_chunks_by_date, DateRange
 
 logger = logging.getLogger(__name__)
 
@@ -177,8 +178,11 @@ class HybridRetriever:
         """
         start_time = datetime.now()
 
-        # Store history for use by _generate_answer during this call
+        # Store context for use during this call
         self._conversation_history = conversation_history
+        self._date_range = extract_date_range(query)
+        if self._date_range:
+            logger.info(f"Temporal filter detected: {self._date_range}")
 
         if strategy == RetrievalStrategy.VECTOR:
             result = self._vector_retrieve(query)
@@ -192,6 +196,7 @@ class HybridRetriever:
             result = self._hybrid_retrieve(query)
 
         self._conversation_history = ""
+        self._date_range = None
         result.execution_time = (datetime.now() - start_time).total_seconds()
         return result
 
@@ -204,6 +209,8 @@ class HybridRetriever:
         # Thread expansion: fetch sibling chunks from same threads
         if chunks:
             chunks = self._expand_by_thread(chunks)
+
+        chunks = self._apply_temporal_filter(chunks)
 
         # Generate answer if configured
         answer = ""
@@ -251,6 +258,8 @@ class HybridRetriever:
             chunk_result = self.toolkit.get_chunk_context(chunk_id)
             if chunk_result.success and chunk_result.data:
                 chunks.append(chunk_result.data)
+
+        chunks = self._apply_temporal_filter(chunks)
 
         # Generate answer
         answer = ""
@@ -326,8 +335,11 @@ class HybridRetriever:
         start = time.time()
 
         if not self.llm_client:
-            logger.warning("GraphRAG requires LLM — falling back to vector search")
-            return self._vector_retrieve(query)
+            logger.warning("GraphRAG requires LLM — no LLM available")
+            return RetrievalResult(
+                query=query, answer="GraphRAG requires an LLM connection.",
+                chunks=[], strategy="graphrag", confidence=0.0,
+            )
 
         # Route: global (aggregate/broad) vs local (specific entity)
         if self.config.graphrag_search_type == "auto":
@@ -351,9 +363,21 @@ class HybridRetriever:
                 model=model,
             )
 
-        if not result.success:
-            logger.warning(f"GraphRAG {search_type} search failed: {result.message}")
-            return self._vector_retrieve(query)
+        # If first search failed or returned no evidence, try the other type
+        has_evidence = result.success and (
+            result.data.get("source_chunk_ids")
+            or result.data.get("points")
+            or result.data.get("entities")
+            or result.data.get("source_text")
+        )
+        if not has_evidence:
+            alt_type = "local" if search_type == "global" else "global"
+            logger.info(f"GraphRAG {search_type} found no evidence — trying {alt_type}")
+            if alt_type == "global":
+                result = self.toolkit.global_search(query, llm_client=self.llm_client, model=model, level=0)
+            else:
+                result = self.toolkit.local_search(query, llm_client=self.llm_client, model=model)
+            search_type = alt_type
 
         # Load source chunks for citation
         source_chunk_ids = result.data.get("source_chunk_ids", [])
@@ -363,6 +387,8 @@ class HybridRetriever:
             chunk_result = self.toolkit.get_chunk_context(chunk_id)
             if chunk_result.success and chunk_result.data:
                 chunks.append(chunk_result.data)
+
+        chunks = self._apply_temporal_filter(chunks)
 
         # Build extra context from GraphRAG-specific evidence
         extra_parts = []
@@ -380,6 +406,19 @@ class HybridRetriever:
                 extra_parts.append(f"{ctx_key.replace('_', ' ').title()}:\n{result.data[ctx_key]}")
 
         extra_context = "\n\n".join(extra_parts)
+
+        # If GraphRAG found no evidence, return a clear message
+        if not chunks and not extra_context:
+            logger.info("GraphRAG found no evidence for this query")
+            execution_time = time.time() - start
+            return RetrievalResult(
+                query=query,
+                answer="GraphRAG could not find relevant information for this query in the knowledge graph communities. Try rephrasing or use a different strategy like Vector or Hybrid.",
+                chunks=[], strategy=f"graphrag_{search_type}",
+                confidence=0.0, sources=[],
+                metadata={"search_type": search_type, "total_tokens": 0},
+                execution_time=execution_time,
+            )
 
         # Generate answer through the unified prompt
         answer = ""
@@ -400,7 +439,7 @@ class HybridRetriever:
             answer=answer,
             chunks=chunks,
             strategy=f"graphrag_{search_type}",
-            confidence=self._calculate_confidence(chunks) if chunks else 0.5,
+            confidence=self._calculate_confidence(chunks),
             sources=[c.get("chunk_id", "") for c in chunks],
             metadata={
                 "search_type": search_type,
@@ -463,6 +502,7 @@ class HybridRetriever:
 
         # Thread expansion: fetch sibling chunks (email body + attachments) from same threads
         final_chunks = self._expand_by_thread(final_chunks)
+        final_chunks = self._apply_temporal_filter(final_chunks)
 
         # Generate answer
         answer = ""
@@ -558,6 +598,8 @@ class HybridRetriever:
                             chunks.append(chunk_result.data)
                             seen_chunk_ids.add(cid)
 
+        chunks = self._apply_temporal_filter(chunks)
+
         # Build extra context from ReAct reasoning observations
         extra_parts = []
         for step in react_result.steps:
@@ -588,7 +630,7 @@ class HybridRetriever:
             answer=answer,
             chunks=chunks,
             strategy="react",
-            confidence=1.0 if react_result.success else 0.0,
+            confidence=self._calculate_confidence(chunks),
             sources=[s.get("chunk_id", s.get("community_id", s.get("path_id", "")))
                     for s in react_result.sources],
             metadata={
@@ -878,19 +920,28 @@ class HybridRetriever:
                     pass
         return None
 
+    def _apply_temporal_filter(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Filter chunks by date range if a temporal query was detected."""
+        date_range = getattr(self, "_date_range", None)
+        if not date_range or not date_range.is_set:
+            return chunks
+        before = len(chunks)
+        filtered = filter_chunks_by_date(chunks, date_range)
+        if len(filtered) < before:
+            logger.info(f"Temporal filter: {before} → {len(filtered)} chunks ({date_range})")
+        return filtered
+
     def _calculate_confidence(self, chunks: List[Dict[str, Any]]) -> float:
-        """Calculate confidence score based on retrieved chunks."""
+        """Calculate confidence as average cosine similarity of retrieved chunks.
+        Excludes expanded/sibling chunks (score=0) that weren't directly matched."""
         if not chunks:
             return 0.0
 
-        # Based on number and quality of chunks
-        base_score = min(1.0, len(chunks) / self.config.top_k_per_strategy)
+        scores = [c.get("similarity_score", 0) for c in chunks if c.get("similarity_score", 0) > 0]
+        if not scores:
+            return 0.0
 
-        # Boost if chunks have high similarity scores
-        similarity_scores = [c.get("similarity_score", 0.5) for c in chunks]
-        avg_similarity = sum(similarity_scores) / len(similarity_scores) if similarity_scores else 0.5
-
-        return base_score * avg_similarity
+        return sum(scores) / len(scores)
 
     def _generate_answer(
         self,
@@ -921,12 +972,21 @@ class HybridRetriever:
             chunk_id = chunk.get("chunk_id", "unknown")
             thread = chunk.get("thread_subject", "")
             source_type = chunk.get("source_type", "email")
+            # Include email date so LLM can reference it in answers
+            recv = chunk.get("received_timestamp", "")
+            sent = chunk.get("sent_timestamp", "")
+            if recv:
+                date_str = f" | Received: {recv[:10]}"
+            elif sent:
+                date_str = f" | Sent: {sent[:10]}"
+            else:
+                date_str = ""
 
             if source_type == "attachment":
                 filename = chunk.get("source_attachment_filename", "unknown")
-                label = f"[{chunk_id}] (Thread: {thread} | Attachment: {filename})"
+                label = f"[{chunk_id}] (Thread: {thread}{date_str} | Attachment: {filename})"
             else:
-                label = f"[{chunk_id}] (Thread: {thread} | Email body)"
+                label = f"[{chunk_id}] (Thread: {thread}{date_str} | Email body)"
 
             context_parts.append(f"{label}\n{text}")
 

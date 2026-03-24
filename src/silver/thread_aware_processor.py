@@ -96,6 +96,10 @@ class ThreadChunk:
     # Sensitivity
     anonymization_skipped: bool = False  # True if thread was classified as not_personal
 
+    # Temporal — from Bronze email document_metadata
+    sent_timestamp: str = ""      # ISO format, e.g. "2013-05-03T10:32:09"
+    received_timestamp: str = ""  # ISO format, e.g. "2013-05-03T10:32:12.664372"
+
     # Metadata
     language: str = "en"
     processing_mode: str = "local"
@@ -128,6 +132,8 @@ class ThreadChunk:
             "attachment_classification": self.attachment_classification,
             "classification_confidence": self.classification_confidence,
             "anonymization_skipped": self.anonymization_skipped,
+            "sent_timestamp": self.sent_timestamp,
+            "received_timestamp": self.received_timestamp,
             "language": self.language,
             "processing_mode": self.processing_mode,
             "processing_time": self.processing_time.isoformat(),
@@ -704,6 +710,8 @@ class ThreadAwareProcessor:
         language: str,
         should_anonymize: bool = True,
         source_email_ids: Optional[List[str]] = None,
+        sent_timestamp: str = "",
+        received_timestamp: str = "",
     ) -> Tuple[List[ThreadChunk], List[str]]:
         """
         Process attachments separately from email body text.
@@ -878,6 +886,8 @@ class ThreadAwareProcessor:
                     attachment_classification=classification,
                     classification_confidence=getattr(att_content, "classification_confidence", 0.0),
                     anonymization_skipped=not should_anonymize,
+                    sent_timestamp=sent_timestamp,
+                    received_timestamp=received_timestamp,
                     language=language,
                     processing_mode=self.processing_mode,
                 )
@@ -1113,6 +1123,8 @@ class ThreadAwareProcessor:
                     source_email_ids=[email_record_id] if email_record_id != 'unknown' else [],
                     source_type="email",
                     anonymization_skipped=True,
+                    sent_timestamp=self._get_email_timestamps(email)[0],
+                    received_timestamp=self._get_email_timestamps(email)[1],
                     language=language,
                     processing_mode=self.processing_mode,
                 )
@@ -1134,6 +1146,10 @@ class ThreadAwareProcessor:
         # Process attachments separately → attachment_chunks/ + attachment_summaries/
         attachment_ids = []
         if all_attachment_contents:
+            # Use earliest email timestamps for attachments
+            all_ts = [self._get_email_timestamps(e) for e in work_emails]
+            sent_times = [t[0] for t in all_ts if t[0]]
+            recv_times = [t[1] for t in all_ts if t[1]]
             att_chunks, attachment_ids = self._process_attachments_separately(
                 attachment_contents=all_attachment_contents,
                 thread_id=filtered_thread.conversation_id,
@@ -1143,6 +1159,8 @@ class ThreadAwareProcessor:
                 language=language,
                 should_anonymize=False,
                 source_email_ids=[e.get('record_id', '') for e in work_emails if e.get('record_id')],
+                sent_timestamp=min(sent_times) if sent_times else "",
+                received_timestamp=min(recv_times) if recv_times else "",
             )
             chunks.extend(att_chunks)
 
@@ -1264,6 +1282,8 @@ class ThreadAwareProcessor:
                 source_email_ids=[email_record_id] if email_record_id != 'unknown' else [],
                 source_type="email",
                 anonymization_skipped=True,
+                sent_timestamp=self._get_email_timestamps(email)[0],
+                received_timestamp=self._get_email_timestamps(email)[1],
                 language=language,
                 processing_mode=self.processing_mode,
             )
@@ -1284,6 +1304,8 @@ class ThreadAwareProcessor:
                 language=language,
                 should_anonymize=False,  # Not personal email: no anonymization
                 source_email_ids=[email_record_id] if email_record_id != 'unknown' else [],
+                sent_timestamp=self._get_email_timestamps(email)[0],
+                received_timestamp=self._get_email_timestamps(email)[1],
             )
             chunks.extend(att_chunks)
 
@@ -1759,6 +1781,14 @@ class ThreadAwareProcessor:
         # Use the same anonymizer for consistency
         result = self.anonymizer.anonymize(participant, "en")
         return result.anonymized_text
+
+    @staticmethod
+    def _get_email_timestamps(email: Dict[str, Any]) -> Tuple[str, str]:
+        """Extract sent and received timestamps from Bronze email.
+        Timestamps are in document_metadata (from Bronze PST extraction).
+        Returns (sent_timestamp, received_timestamp)."""
+        meta = email.get("document_metadata", {})
+        return meta.get("sent_time", ""), meta.get("received_time", "")
 
     @staticmethod
     def _safe_filename(raw_id: str) -> str:
