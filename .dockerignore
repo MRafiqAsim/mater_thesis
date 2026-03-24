@@ -1,0 +1,12 @@
+.git
+.venv
+.env
+data/
+logs/
+pathrag_reference/
+synapse/
+docs/
+*.pyc
+__pycache__
+*.pst
+*.egg-info

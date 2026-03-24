@@ -1,0 +1,136 @@
+{
+    "name": "EmailKnowledgePipeline",
+    "description": "End-to-end email knowledge extraction: Ingestion → Silver → Gold → Evaluation",
+    "activities": [
+        {
+            "name": "01_Ingestion",
+            "type": "SynapseNotebook",
+            "dependsOn": [],
+            "policy": {
+                "timeout": "02:00:00",
+                "retry": 1,
+                "retryIntervalInSeconds": 60
+            },
+            "typeProperties": {
+                "notebook": {
+                    "referenceName": "01_ingestion",
+                    "type": "NotebookReference"
+                },
+                "sparkPool": {
+                    "referenceName": "MediumPool",
+                    "type": "BigDataPoolReference"
+                }
+            }
+        },
+        {
+            "name": "Check_New_Files",
+            "type": "IfCondition",
+            "dependsOn": [
+                {
+                    "activity": "01_Ingestion",
+                    "dependencyConditions": ["Succeeded"]
+                }
+            ],
+            "typeProperties": {
+                "expression": {
+                    "value": "@not(equals(activity('01_Ingestion').output.status.Output.result.exitValue, 'NO_NEW_FILES'))",
+                    "type": "Expression"
+                },
+                "ifTrueActivities": [
+                    {
+                        "name": "02_Thread_Processing",
+                        "type": "SynapseNotebook",
+                        "policy": {
+                            "timeout": "04:00:00",
+                            "retry": 1
+                        },
+                        "typeProperties": {
+                            "notebook": {
+                                "referenceName": "02_thread_processing",
+                                "type": "NotebookReference"
+                            },
+                            "sparkPool": {
+                                "referenceName": "MediumPool",
+                                "type": "BigDataPoolReference"
+                            }
+                        }
+                    },
+                    {
+                        "name": "03_Gold_Indexing",
+                        "type": "SynapseNotebook",
+                        "dependsOn": [
+                            {
+                                "activity": "02_Thread_Processing",
+                                "dependencyConditions": ["Succeeded"]
+                            }
+                        ],
+                        "policy": {
+                            "timeout": "02:00:00",
+                            "retry": 1
+                        },
+                        "typeProperties": {
+                            "notebook": {
+                                "referenceName": "03_gold_indexing",
+                                "type": "NotebookReference"
+                            },
+                            "sparkPool": {
+                                "referenceName": "MediumPool",
+                                "type": "BigDataPoolReference"
+                            }
+                        }
+                    },
+                    {
+                        "name": "04_Evaluation",
+                        "type": "SynapseNotebook",
+                        "dependsOn": [
+                            {
+                                "activity": "03_Gold_Indexing",
+                                "dependencyConditions": ["Succeeded"]
+                            }
+                        ],
+                        "policy": {
+                            "timeout": "01:00:00",
+                            "retry": 0
+                        },
+                        "typeProperties": {
+                            "notebook": {
+                                "referenceName": "04_query_service",
+                                "type": "NotebookReference"
+                            },
+                            "sparkPool": {
+                                "referenceName": "MediumPool",
+                                "type": "BigDataPoolReference"
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+    ],
+    "triggers": [
+        {
+            "name": "NewFilesTrigger",
+            "description": "Fires when new files land in input/source/",
+            "type": "BlobEventsTrigger",
+            "typeProperties": {
+                "blobPathBeginsWith": "/pipeline-data/input/source/",
+                "ignoreEmptyBlobs": true,
+                "events": ["Microsoft.Storage.BlobCreated"],
+                "scope": "/subscriptions/{subscription-id}/resourceGroups/{rg}/providers/Microsoft.Storage/storageAccounts/{storage-account}"
+            },
+            "pipelines": [
+                {
+                    "pipelineReference": {
+                        "referenceName": "EmailKnowledgePipeline",
+                        "type": "PipelineReference"
+                    }
+                }
+            ]
+        },
+        {
+            "name": "ManualTrigger",
+            "description": "Manual run — click Run in Synapse Studio",
+            "type": "Manual"
+        }
+    ]
+}
