@@ -145,6 +145,26 @@ After creation:
 
 > **Alternative**: You can use a single Cosmos DB account with multi-model if available in your region. The guide assumes separate accounts for clarity.
 
+### 1.9 Create Azure AI Search
+
+Go to Azure Portal → Azure AI Search → Create.
+
+```
+Resource Group:   rg-thesis-pipeline
+Service name:     thesis-ai-search        (globally unique)
+Region:           East US 2
+Pricing tier:     Free (50 MB, fine for thesis)   or Basic ($75/month for larger data)
+```
+
+After creation:
+
+1. Go to **AI Search → Keys** → copy **Primary admin key**
+   - Save as `AZURE_SEARCH_API_KEY`
+2. Copy the **URL** from the Overview page (e.g., `https://thesis-ai-search.search.windows.net`)
+   - Save as `AZURE_SEARCH_ENDPOINT`
+
+The search index is created automatically by the `03_gold_indexing` notebook when it runs the embedding generator.
+
 ---
 
 ## Step 2: Upload Project Code to Synapse
@@ -232,6 +252,8 @@ azure-cosmos==4.7.0
 gremlinpython==3.7.2
 sentence-transformers==3.1.1
 gradio==5.8.0
+langdetect==1.0.9
+ftfy==6.3.1
 ```
 
 After upload, click **Apply**. Wait for the pool to restart (~5 min).
@@ -253,24 +275,28 @@ This must be done once per Spark pool restart. We handle this in notebook `00_se
 5. **Edit the configuration cell** — replace placeholders:
 
 ```python
-os.environ["AZURE_OPENAI_ENDPOINT"] = "https://muham-mll3ne3p-eastus2.cognitiveservices.azure.com/"
-os.environ["AZURE_OPENAI_API_KEY"] = "<your-actual-key>"
+os.environ["AZURE_OPENAI_ENDPOINT"] = "<your-endpoint>"
+os.environ["AZURE_OPENAI_API_KEY"] = "<your-key>"
 os.environ["AZURE_OPENAI_DEPLOYMENT"] = "structexp-4o"
 os.environ["AZURE_OPENAI_API_VERSION"] = "2025-01-01-preview"
 os.environ["AZURE_OPENAI_EMBEDDING_DEPLOYMENT"] = "text-embedding-3-small"
 
-os.environ["ADLS_STORAGE_ACCOUNT"] = "thesispipelinestore"
+os.environ["ADLS_STORAGE_ACCOUNT"] = "<your-storage-account>"
 os.environ["ADLS_CONTAINER"] = "pipeline-data"
 
 # Cosmos DB Gremlin
-os.environ["COSMOS_GREMLIN_ENDPOINT"] = "wss://thesis-cosmos-gremlin.gremlin.cosmos.azure.com:443/"
+os.environ["COSMOS_GREMLIN_ENDPOINT"] = "wss://<your-account>.gremlin.cosmos.azure.com:443/"
 os.environ["COSMOS_GREMLIN_KEY"] = "<your-gremlin-key>"
 os.environ["COSMOS_DATABASE"] = "email-kg"
 os.environ["COSMOS_GRAPH"] = "knowledge-graph"
 
 # Cosmos DB NoSQL
-os.environ["COSMOS_NOSQL_ENDPOINT"] = "https://thesis-cosmos-nosql.documents.azure.com:443/"
+os.environ["COSMOS_NOSQL_ENDPOINT"] = "https://<your-account>.documents.azure.com:443/"
 os.environ["COSMOS_NOSQL_KEY"] = "<your-nosql-key>"
+
+# Azure AI Search
+os.environ["AZURE_SEARCH_ENDPOINT"] = "https://<your-search>.search.windows.net"
+os.environ["AZURE_SEARCH_API_KEY"] = "<your-search-key>"
 ```
 
 6. **Add a first cell** to make code importable:
@@ -588,6 +614,9 @@ az keyvault create \
 ```bash
 az keyvault secret set --vault-name thesis-kv --name "azure-openai-key" --value "<your-key>"
 az keyvault secret set --vault-name thesis-kv --name "adls-storage-key" --value "<your-storage-key>"
+az keyvault secret set --vault-name thesis-kv --name "cosmos-gremlin-key" --value "<your-gremlin-key>"
+az keyvault secret set --vault-name thesis-kv --name "cosmos-nosql-key" --value "<your-nosql-key>"
+az keyvault secret set --vault-name thesis-kv --name "azure-search-key" --value "<your-search-key>"
 ```
 
 ### 8.3 Create Linked Service in Synapse
@@ -607,9 +636,15 @@ from notebookutils import mssparkutils  # Available in Synapse
 
 azure_openai_key = mssparkutils.credentials.getSecret("thesis-kv", "azure-openai-key", "KeyVaultLS")
 adls_key = mssparkutils.credentials.getSecret("thesis-kv", "adls-storage-key", "KeyVaultLS")
+cosmos_gremlin_key = mssparkutils.credentials.getSecret("thesis-kv", "cosmos-gremlin-key", "KeyVaultLS")
+cosmos_nosql_key = mssparkutils.credentials.getSecret("thesis-kv", "cosmos-nosql-key", "KeyVaultLS")
+search_key = mssparkutils.credentials.getSecret("thesis-kv", "azure-search-key", "KeyVaultLS")
 
 os.environ["AZURE_OPENAI_API_KEY"] = azure_openai_key
 os.environ["ADLS_STORAGE_KEY"] = adls_key
+os.environ["COSMOS_GREMLIN_KEY"] = cosmos_gremlin_key
+os.environ["COSMOS_NOSQL_KEY"] = cosmos_nosql_key
+os.environ["AZURE_SEARCH_API_KEY"] = search_key
 ```
 
 ---
@@ -663,9 +698,12 @@ Verify files appear in the expected folders after each stage:
 | Synapse Spark Pool (Medium, auto-pause) | ~$2-5/run (pay per use) |
 | Azure OpenAI GPT-4o (Silver + Gold) | ~$5-20 (depends on email volume) |
 | Azure OpenAI Embeddings | ~$0.50 |
+| Azure AI Search (Free tier) | $0 (or ~$75/month for Basic) |
+| Cosmos DB Gremlin (Serverless) | ~$1-5 (pay per RU) |
+| Cosmos DB NoSQL (Serverless) | ~$1-3 (pay per RU) |
 | Event Grid | ~$0 (free tier covers low volume) |
 | Key Vault | ~$0.03/secret/month |
-| **Total for thesis** | **~$10-30/month** |
+| **Total for thesis** | **~$15-40/month** |
 
 Auto-pause on the Spark pool is critical — without it, a Medium pool runs ~$1,200/month.
 
@@ -678,7 +716,10 @@ Auto-pause on the Spark pool is critical — without it, a Medium pool runs ~$1,
 | Upload files | Storage Account → pipeline-data → input/source/ |
 | Manual pipeline run | Synapse Studio → Integrate → EmailKnowledgePipeline → Trigger now |
 | Monitor runs | Synapse Studio → Monitor → Pipeline runs |
-| View data | Storage Account → pipeline-data → bronze/ / silver_llm/ / gold_llm/ |
+| View ADLS data | Storage Account → pipeline-data → bronze/ / silver_llm/ / gold_llm/ |
+| View graph data | Cosmos DB Gremlin → Data Explorer → knowledge-graph |
+| View chunks/communities | Cosmos DB NoSQL → Data Explorer → email-kg |
+| View search index | Azure AI Search → Indexes → knowledge-chunks |
 | Notebook logs | Monitor → Apache Spark applications → click run → stdout |
 | API keys | Key Vault → thesis-kv → Secrets |
 | Change prompts | Upload new `config/prompts.json` to pipeline-data/config/ |

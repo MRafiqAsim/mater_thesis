@@ -52,6 +52,7 @@ retriever: HybridRetriever | None = None
 _gold_path: str = ""
 _silver_path: str = ""
 _mode: str = "local"
+_cosmos_adapter = None
 
 STRATEGY_LABELS = ["Vector", "PathRAG", "GraphRAG", "Hybrid", "ReAct"]
 STRATEGY_MAP = {
@@ -187,7 +188,10 @@ def get_retriever() -> HybridRetriever:
     """Get or create the singleton HybridRetriever."""
     global retriever
     if retriever is None:
-        retriever = HybridRetriever(_gold_path, _silver_path, mode=_mode)
+        retriever = HybridRetriever(
+            _gold_path, _silver_path, mode=_mode,
+            cosmos_adapter=_cosmos_adapter,
+        )
     return retriever
 
 
@@ -200,15 +204,19 @@ def generate_examples() -> list[list[str]]:
     examples = []
     gold = Path(_gold_path)
     silver = Path(_silver_path)
+    cosmos = _cosmos_adapter
 
     try:
         # 1. Community-based questions — pick top 2 communities by entity count
-        comm_dirs = sorted(gold.glob("communities/level_*"))
-        communities = []
-        for d in comm_dirs:
-            for f in d.glob("*.json"):
-                with open(f) as fh:
-                    communities.append(json.load(fh))
+        if cosmos and cosmos.is_configured:
+            communities = cosmos.get_communities_by_level(0)
+        else:
+            communities = []
+            comm_dirs = sorted(gold.glob("communities/level_*"))
+            for d in comm_dirs:
+                for f in d.glob("*.json"):
+                    with open(f) as fh:
+                        communities.append(json.load(fh))
         communities.sort(key=lambda c: c.get("entity_count", 0), reverse=True)
 
         for comm in communities[:2]:
@@ -221,11 +229,26 @@ def generate_examples() -> list[list[str]]:
                     examples.append([f"What is the relationship between {ent_str}?"])
 
         # 2. Entity-based questions — top ORGs and PRODUCTs by mention count
-        nodes_file = gold / "knowledge_graph" / "nodes.json"
-        if nodes_file.exists():
-            with open(nodes_file) as fh:
-                nodes = json.load(fh)
+        nodes = {}
+        if cosmos and cosmos.is_configured and cosmos.gremlin_endpoint:
+            try:
+                for ntype in cosmos.list_node_types():
+                    results = cosmos._gremlin_query(
+                        f"g.V().has('node_type', '{ntype}').valueMap(true).limit(500)"
+                    )
+                    for raw in results:
+                        parsed = cosmos._parse_gremlin_node(raw)
+                        nid = parsed.get("node_id", "")
+                        nodes[nid] = parsed
+            except Exception:
+                pass
+        else:
+            nodes_file = gold / "knowledge_graph" / "nodes.json"
+            if nodes_file.exists():
+                with open(nodes_file) as fh:
+                    nodes = json.load(fh)
 
+        if nodes:
             orgs = sorted(
                 [n for n in nodes.values() if n.get("node_type") == "ORG"],
                 key=lambda n: n.get("mention_count", 0), reverse=True,
@@ -256,17 +279,26 @@ def generate_examples() -> list[list[str]]:
                 examples.append([f"What tasks or projects is {persons[0]['name']} involved in?"])
 
         # 3. Thread-subject based question — pick a specific thread topic
-        summary_dir = silver / "not_personal" / "thread_summaries"
-        if summary_dir.exists():
+        if cosmos and cosmos.is_configured:
+            try:
+                container = cosmos._get_container("thread_summaries")
+                query = "SELECT TOP 5 * FROM c ORDER BY c.email_count DESC"
+                summaries = list(container.query_items(query=query, enable_cross_partition_query=True))
+            except Exception:
+                summaries = []
+        else:
             summaries = []
-            for f in summary_dir.glob("*.json"):
-                with open(f) as fh:
-                    summaries.append(json.load(fh))
-            summaries.sort(key=lambda s: s.get("email_count", 0), reverse=True)
-            if summaries:
-                subj = summaries[0].get("subject", "").strip()
-                if subj:
-                    examples.append([f"Summarize the email thread about '{subj}'"])
+            summary_dir = silver / "not_personal" / "thread_summaries"
+            if summary_dir.exists():
+                for f in summary_dir.glob("*.json"):
+                    with open(f) as fh:
+                        summaries.append(json.load(fh))
+                summaries.sort(key=lambda s: s.get("email_count", 0), reverse=True)
+
+        if summaries:
+            subj = summaries[0].get("subject", "").strip()
+            if subj:
+                examples.append([f"Summarize the email thread about '{subj}'"])
 
     except Exception as e:
         logger.warning(f"Failed to generate dynamic examples: {e}")
@@ -803,7 +835,7 @@ def parse_args():
 
 
 def main():
-    global _gold_path, _silver_path, _mode
+    global _gold_path, _silver_path, _mode, _cosmos_adapter
 
     args = parse_args()
     data_root = Path("./data")
@@ -824,7 +856,13 @@ def main():
 
     _mode = args.mode or "local"
 
-    if not Path(_gold_path).exists():
+    # Initialize Cosmos DB adapter if configured
+    if os.getenv("COSMOS_GREMLIN_ENDPOINT") or os.getenv("COSMOS_NOSQL_ENDPOINT"):
+        from src.storage.cosmos_adapter import CosmosAdapter
+        _cosmos_adapter = CosmosAdapter.from_env()
+        logger.info(f"Cosmos DB adapter initialized (configured={_cosmos_adapter.is_configured})")
+
+    if not _cosmos_adapter and not Path(_gold_path).exists():
         logger.error(f"Gold path does not exist: {_gold_path}")
         sys.exit(1)
 
@@ -834,6 +872,7 @@ def main():
     print(f"  Mode:   {_mode}")
     print(f"  Gold:   {_gold_path}")
     print(f"  Silver: {_silver_path}")
+    print(f"  Cosmos: {'configured' if _cosmos_adapter else 'not configured (local mode)'}")
     print(f"  Port:   {args.port}")
 
     print("\nLoading retriever…")

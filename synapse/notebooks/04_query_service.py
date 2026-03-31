@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 
 sys.path.insert(0, ".")
 
-from src.storage import ADLSAdapter
+from src.storage import ADLSAdapter, CosmosAdapter
 
 adapter = ADLSAdapter()
+cosmos = CosmosAdapter.from_env() if os.getenv("COSMOS_GREMLIN_ENDPOINT") or os.getenv("COSMOS_NOSQL_ENDPOINT") else None
 
 # %%
 # --- Configuration ---
@@ -94,6 +95,7 @@ else:
 # app_module._gold_path = LOCAL_GOLD
 # app_module._silver_path = LOCAL_SILVER
 # app_module._mode = MODE
+# app_module._cosmos_adapter = cosmos
 #
 # get_retriever()  # Pre-load
 # gradio_app = create_app()
@@ -103,7 +105,7 @@ else:
 # --- Option B: Batch query for evaluation ---
 from src.retrieval import HybridRetriever, RetrievalStrategy
 
-retriever = HybridRetriever(LOCAL_GOLD, LOCAL_SILVER, mode=MODE)
+retriever = HybridRetriever(LOCAL_GOLD, LOCAL_SILVER, mode=MODE, cosmos_adapter=cosmos)
 
 # Example evaluation queries
 eval_queries = [

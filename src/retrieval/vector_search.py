@@ -215,6 +215,12 @@ class AzureSearchIndexer:
                 facetable=True,
             ),
             SearchField(
+                name="thread_subject",
+                type=SearchFieldDataType.String,
+                filterable=True,
+                searchable=True,
+            ),
+            SearchField(
                 name="source_type",
                 type=SearchFieldDataType.String,
                 filterable=True,
@@ -453,8 +459,8 @@ class HybridSearcher:
             "select": ["chunk_id", "content", "summary", "parent_document_id",
                       "parent_type", "detected_language", "source_file",
                       "chunk_index", "entities",
-                      "thread_id", "source_type", "source_attachment_filename",
-                      "has_attachments"],
+                      "thread_id", "thread_subject", "source_type",
+                      "source_attachment_filename", "has_attachments"],
         }
 
         if filters:
@@ -515,6 +521,7 @@ class HybridSearcher:
                     "entities": result.get("entities", []),
                     "summary": result.get("summary"),
                     "thread_id": result.get("thread_id"),
+                    "thread_subject": result.get("thread_subject"),
                     "source_type": result.get("source_type"),
                     "source_attachment_filename": result.get("source_attachment_filename"),
                     "has_attachments": result.get("has_attachments", False),

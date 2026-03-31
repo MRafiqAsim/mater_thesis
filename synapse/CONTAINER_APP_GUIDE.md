@@ -84,14 +84,19 @@ az containerapp create \
   --cpu 2 \
   --memory 4Gi \
   --env-vars \
-    AZURE_OPENAI_ENDPOINT="https://muham-mll3ne3p-eastus2.cognitiveservices.azure.com/" \
+    AZURE_OPENAI_ENDPOINT="<your-endpoint>" \
     AZURE_OPENAI_API_KEY="<your-key>" \
     AZURE_OPENAI_DEPLOYMENT="structexp-4o" \
     AZURE_OPENAI_API_VERSION="2025-01-01-preview" \
     AZURE_OPENAI_EMBEDDING_DEPLOYMENT="text-embedding-3-small" \
-    ADLS_STORAGE_ACCOUNT="thesispipelinestore" \
-    ADLS_CONTAINER="pipeline-data" \
-    ADLS_STORAGE_KEY="<your-storage-key>" \
+    COSMOS_GREMLIN_ENDPOINT="wss://<your-account>.gremlin.cosmos.azure.com:443/" \
+    COSMOS_GREMLIN_KEY="<your-gremlin-key>" \
+    COSMOS_DATABASE="email-kg" \
+    COSMOS_GRAPH="knowledge-graph" \
+    COSMOS_NOSQL_ENDPOINT="https://<your-account>.documents.azure.com:443/" \
+    COSMOS_NOSQL_KEY="<your-nosql-key>" \
+    AZURE_SEARCH_ENDPOINT="https://<your-search>.search.windows.net" \
+    AZURE_SEARCH_API_KEY="<your-search-key>" \
     PIPELINE_MODE="llm"
 ```
 
@@ -133,31 +138,15 @@ az containerapp update \
 
 ## How Data Flows
 
-The Gradio app needs Gold and Silver data to answer queries. Two options:
+The Gradio app reads all query-time data from Azure services — **no local Silver/Gold files needed**:
 
-### Option A: Download from ADLS at Startup (Simple)
+- **Azure AI Search** — vector + keyword hybrid search over chunk embeddings and summaries
+- **Cosmos DB NoSQL** — chunk details, thread summaries, community summaries (by ID or thread)
+- **Cosmos DB Gremlin** — knowledge graph traversals, entity lookups, PathRAG paths
 
-Add a startup script that syncs Gold/Silver from ADLS to local `/tmp/` inside the container. Modify the Dockerfile CMD:
+When `COSMOS_GREMLIN_ENDPOINT` or `COSMOS_NOSQL_ENDPOINT` env vars are set, the retrieval layer automatically switches to DB reads. No ADLS sync or local file I/O happens at query time.
 
-```dockerfile
-CMD ["sh", "-c", "python -c 'from src.storage import ADLSAdapter; a=ADLSAdapter(); print(\"Syncing data...\")' && python -m src.app --mode llm --gold /tmp/gold_llm --silver /tmp/silver_llm --port 7861"]
-```
-
-Or better — modify `src/app.py` to detect ADLS and sync on startup. Add to the `main()` function before creating the retriever:
-
-```python
-# Sync Gold/Silver from ADLS to local temp if running in cloud
-if os.getenv("ADLS_STORAGE_ACCOUNT"):
-    from src.storage import ADLSAdapter
-    adapter = ADLSAdapter()
-    # Sync logic here — download gold_llm/ and silver_llm/ to local paths
-```
-
-### Option B: Read Directly from ADLS (Requires Adapter Integration)
-
-This requires modifying the retriever to use ADLSAdapter instead of local file I/O. More work but no data duplication.
-
-**Recommendation:** Use Option A for now — download once at container startup. The Gold layer is small (~50MB) so this takes seconds.
+The `--gold` and `--silver` CLI args still exist for local development but are not needed in the Container App deployment.
 
 ---
 

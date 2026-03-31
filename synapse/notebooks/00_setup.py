@@ -11,7 +11,7 @@
 %pip install tiktoken pypff-compat presidio-analyzer presidio-anonymizer \
     spacy openai python-dotenv networkx graspologic pydantic httpx \
     azure-storage-file-datalake azure-identity azure-search-documents \
-    sentence-transformers
+    azure-cosmos gremlinpython sentence-transformers
 
 # %%
 # --- Download spaCy models ---
@@ -36,6 +36,20 @@ os.environ["AZURE_OPENAI_EMBEDDING_DEPLOYMENT"] = "text-embedding-3-small"
 os.environ["ADLS_STORAGE_ACCOUNT"] = "<your-storage-account>"
 os.environ["ADLS_CONTAINER"] = "pipeline-data"
 # os.environ["ADLS_STORAGE_KEY"] = "<key>"  # Or use managed identity (no key needed)
+
+# Cosmos DB Gremlin (knowledge graph)
+os.environ["COSMOS_GREMLIN_ENDPOINT"] = "<wss://your-account.gremlin.cosmos.azure.com:443/>"
+os.environ["COSMOS_GREMLIN_KEY"] = "<your-gremlin-key>"
+os.environ["COSMOS_DATABASE"] = "email-kg"
+os.environ["COSMOS_GRAPH"] = "knowledge-graph"
+
+# Cosmos DB NoSQL (chunks, communities, thread summaries)
+os.environ["COSMOS_NOSQL_ENDPOINT"] = "<https://your-account.documents.azure.com:443/>"
+os.environ["COSMOS_NOSQL_KEY"] = "<your-nosql-key>"
+
+# Azure AI Search
+os.environ["AZURE_SEARCH_ENDPOINT"] = "<https://your-search.search.windows.net>"
+os.environ["AZURE_SEARCH_API_KEY"] = "<your-search-key>"
 
 # Pipeline
 os.environ["PIPELINE_MODE"] = "llm"

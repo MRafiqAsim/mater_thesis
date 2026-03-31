@@ -88,6 +88,7 @@ class RetrievalToolkit:
         gold_path: str,
         silver_path: Optional[str] = None,
         mode: str = "llm",
+        cosmos_adapter=None,
     ):
         """
         Initialize the retrieval toolkit.
@@ -96,10 +97,15 @@ class RetrievalToolkit:
             gold_path: Path to Gold layer with graph and indexes
             silver_path: Path to Silver layer with chunks (optional)
             mode: Processing mode — "local" uses local models
+            cosmos_adapter: Optional CosmosAdapter for DB-backed retrieval (Azure pipeline)
         """
         self.gold_path = Path(gold_path)
         self.silver_path = Path(silver_path) if silver_path else None
         self.mode = mode
+        self.cosmos = cosmos_adapter
+
+        # Azure AI Search client (lazy, used when cosmos is configured)
+        self._azure_searcher = None
 
         # Lazy-loaded components
         self._graph = None
@@ -414,12 +420,9 @@ class RetrievalToolkit:
                 self._entity_ids, self._entity_embeddings = generator.load_embeddings("entities")
                 # Build ID → name mapping from graph nodes
                 self._entity_id_to_name = {}
-                nodes_file = self.gold_path / "knowledge_graph" / "nodes.json"
-                if nodes_file.exists():
-                    with open(nodes_file, 'r', encoding='utf-8') as f:
-                        nodes = json.load(f)
-                    for node_id, node_data in nodes.items():
-                        self._entity_id_to_name[node_id] = node_data.get("name", node_id)
+                nodes = self._load_nodes()
+                for node_id, node_data in nodes.items():
+                    self._entity_id_to_name[node_id] = node_data.get("name", node_id)
                 logger.info(f"Loaded {len(self._entity_ids)} entity embeddings for node retrieval")
             except FileNotFoundError:
                 logger.warning("Entity embeddings not found — falling back to string matching")
@@ -587,6 +590,20 @@ class RetrievalToolkit:
                 message=str(e)
             )
 
+    def _load_communities(self, level: int = 0) -> List[Dict[str, Any]]:
+        """Load communities from Cosmos DB or local Gold files."""
+        if self.cosmos and self.cosmos.is_configured:
+            return self.cosmos.get_communities_by_level(level)
+
+        communities_path = self.gold_path / "communities" / f"level_{level}"
+        if not communities_path.exists():
+            return []
+        communities = []
+        for comm_file in communities_path.glob("*.json"):
+            with open(comm_file, 'r', encoding='utf-8') as f:
+                communities.append(json.load(f))
+        return communities
+
     def graphrag_search(
         self,
         query: str,
@@ -598,28 +615,14 @@ class RetrievalToolkit:
 
         try:
             # Load community summaries
-            communities_path = self.gold_path / "communities" / f"level_{level}"
-
-            if not communities_path.exists():
-                return ToolResult(
-                    tool_name="graphrag_search",
-                    success=False,
-                    data=[],
-                    message=f"Community level {level} not found"
-                )
-
-            # Load all communities at this level
-            communities = []
-            for comm_file in communities_path.glob("*.json"):
-                with open(comm_file, 'r', encoding='utf-8') as f:
-                    communities.append(json.load(f))
+            communities = self._load_communities(level)
 
             if not communities:
                 return ToolResult(
                     tool_name="graphrag_search",
                     success=False,
                     data=[],
-                    message="No communities found"
+                    message=f"Community level {level} not found"
                 )
 
             # Simple keyword matching (could be enhanced with embeddings)
@@ -679,6 +682,18 @@ class RetrievalToolkit:
                 message=str(e)
             )
 
+    def _get_azure_searcher(self):
+        """Lazy-initialize Azure AI Search client."""
+        if self._azure_searcher is None:
+            endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
+            key = os.getenv("AZURE_SEARCH_API_KEY")
+            emb_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            emb_key = os.getenv("AZURE_OPENAI_API_KEY")
+            if endpoint and key and emb_endpoint and emb_key:
+                from .vector_search import HybridSearcher
+                self._azure_searcher = HybridSearcher(endpoint, key, emb_endpoint, emb_key)
+        return self._azure_searcher
+
     def vector_search(
         self,
         query: str,
@@ -689,55 +704,12 @@ class RetrievalToolkit:
         start_time = datetime.now()
 
         try:
-            chunk_ids, chunk_embeddings = self._load_embeddings()
-            generator = self._embedding_generator
+            # Azure pipeline: use Azure AI Search (embeddings stored in cloud)
+            if self.cosmos and self.cosmos.is_configured:
+                return self._vector_search_azure(query, top_k, filter_thread, start_time)
 
-            if chunk_embeddings is None or len(chunk_ids) == 0:
-                return ToolResult(
-                    tool_name="vector_search",
-                    success=False,
-                    data=[],
-                    message="Chunk embeddings not available"
-                )
-
-            # Search
-            results = generator.similarity_search(
-                query, chunk_embeddings, chunk_ids, top_k=top_k * 2  # Get more for filtering
-            )
-
-            # Load chunk details
-            detailed_results = []
-            for chunk_id, score in results:
-                if filter_thread:
-                    # Would need to load chunk to check thread
-                    pass
-
-                # Load chunk data
-                chunk_data = self._load_chunk(chunk_id)
-                if chunk_data:
-                    detailed_results.append({
-                        "chunk_id": chunk_id,
-                        "similarity_score": score,
-                        "text": chunk_data.get("summary") or chunk_data.get("text_english") or chunk_data.get("text_anonymized", ""),
-                        "thread_id": chunk_data.get("thread_id"),
-                        "thread_subject": chunk_data.get("thread_subject"),
-                        "source_type": chunk_data.get("source_type", "email"),
-                        "source_attachment_filename": chunk_data.get("source_attachment_filename", ""),
-                        "has_attachments": chunk_data.get("has_attachments", False)
-                    })
-
-                if len(detailed_results) >= top_k:
-                    break
-
-            execution_time = (datetime.now() - start_time).total_seconds()
-
-            return ToolResult(
-                tool_name="vector_search",
-                success=True,
-                data=detailed_results,
-                message=f"Found {len(detailed_results)} similar chunks",
-                execution_time=execution_time
-            )
+            # Local: use numpy embeddings + Silver file reads
+            return self._vector_search_local(query, top_k, filter_thread, start_time)
 
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
@@ -748,23 +720,101 @@ class RetrievalToolkit:
                 message=str(e)
             )
 
+    def _vector_search_azure(self, query: str, top_k: int,
+                              filter_thread: Optional[str], start_time) -> ToolResult:
+        """Vector search via Azure AI Search — no local file reads."""
+        searcher = self._get_azure_searcher()
+        if not searcher:
+            return ToolResult(
+                tool_name="vector_search", success=False, data=[],
+                message="Azure AI Search not configured"
+            )
+
+        filters = f"thread_id eq '{filter_thread}'" if filter_thread else None
+        response = searcher.search(query, top_k=top_k, filters=filters, search_type="hybrid")
+
+        detailed_results = []
+        for r in response.results:
+            text = r.metadata.get("summary") or r.content or ""
+            detailed_results.append({
+                "chunk_id": r.chunk_id,
+                "similarity_score": r.reranker_score or r.score,
+                "text": text,
+                "summary": r.metadata.get("summary", ""),
+                "thread_id": r.metadata.get("thread_id"),
+                "thread_subject": r.metadata.get("thread_subject"),
+                "source_type": r.metadata.get("source_type", "email"),
+                "source_attachment_filename": r.metadata.get("source_attachment_filename", ""),
+                "has_attachments": r.metadata.get("has_attachments", False),
+            })
+
+        execution_time = (datetime.now() - start_time).total_seconds()
+        return ToolResult(
+            tool_name="vector_search",
+            success=True,
+            data=detailed_results,
+            message=f"Found {len(detailed_results)} similar chunks (Azure AI Search)",
+            execution_time=execution_time
+        )
+
+    def _vector_search_local(self, query: str, top_k: int,
+                              filter_thread: Optional[str], start_time) -> ToolResult:
+        """Vector search via local numpy embeddings + Silver file reads."""
+        chunk_ids, chunk_embeddings = self._load_embeddings()
+        generator = self._embedding_generator
+
+        if chunk_embeddings is None or len(chunk_ids) == 0:
+            return ToolResult(
+                tool_name="vector_search",
+                success=False,
+                data=[],
+                message="Chunk embeddings not available"
+            )
+
+        results = generator.similarity_search(
+            query, chunk_embeddings, chunk_ids, top_k=top_k * 2
+        )
+
+        detailed_results = []
+        for chunk_id, score in results:
+            chunk_data = self._load_chunk(chunk_id)
+            if chunk_data:
+                detailed_results.append({
+                    "chunk_id": chunk_id,
+                    "similarity_score": score,
+                    "text": chunk_data.get("summary") or chunk_data.get("text_english") or chunk_data.get("text_anonymized", ""),
+                    "thread_id": chunk_data.get("thread_id"),
+                    "thread_subject": chunk_data.get("thread_subject"),
+                    "source_type": chunk_data.get("source_type", "email"),
+                    "source_attachment_filename": chunk_data.get("source_attachment_filename", ""),
+                    "has_attachments": chunk_data.get("has_attachments", False)
+                })
+
+            if len(detailed_results) >= top_k:
+                break
+
+        execution_time = (datetime.now() - start_time).total_seconds()
+        return ToolResult(
+            tool_name="vector_search",
+            success=True,
+            data=detailed_results,
+            message=f"Found {len(detailed_results)} similar chunks",
+            execution_time=execution_time
+        )
+
     def list_entities(self, entity_type: str) -> ToolResult:
         """List all entities of a given type from the knowledge graph."""
         start_time = datetime.now()
 
         try:
-            # Load nodes directly from JSON
-            nodes_file = self.gold_path / "knowledge_graph" / "nodes.json"
-            if not nodes_file.exists():
+            nodes = self._load_nodes()
+            if not nodes:
                 return ToolResult(
                     tool_name="list_entities",
                     success=False,
                     data=[],
                     message="Knowledge graph nodes not found"
                 )
-
-            with open(nodes_file, 'r', encoding='utf-8') as f:
-                nodes = json.load(f)
 
             entity_type_upper = entity_type.upper()
             entities = []
@@ -801,13 +851,50 @@ class RetrievalToolkit:
                 message=str(e)
             )
 
+    def _load_nodes(self) -> Dict[str, Any]:
+        """Load graph nodes from Cosmos Gremlin or local JSON. Cached."""
+        if hasattr(self, '_cached_nodes') and self._cached_nodes is not None:
+            return self._cached_nodes
+
+        # Azure pipeline: use Gremlin
+        if self.cosmos and self.cosmos.is_configured and self.cosmos.gremlin_endpoint:
+            try:
+                type_list = self.cosmos.list_node_types()
+                nodes = {}
+                for ntype in type_list:
+                    results = self.cosmos._gremlin_query(
+                        f"g.V().has('node_type', '{ntype}').valueMap(true).limit(500)"
+                    )
+                    for raw in results:
+                        parsed = self.cosmos._parse_gremlin_node(raw)
+                        nid = parsed.get("node_id", parsed.get("id", ""))
+                        nodes[nid] = {
+                            "name": parsed.get("name", nid),
+                            "node_type": parsed.get("node_type", ""),
+                            "mention_count": parsed.get("mention_count", 0),
+                        }
+                self._cached_nodes = nodes
+                return nodes
+            except Exception as e:
+                logger.warning(f"Cosmos Gremlin node load failed, falling back to local: {e}")
+
+        # Local fallback
+        nodes_file = self.gold_path / "knowledge_graph" / "nodes.json"
+        if nodes_file.exists():
+            with open(nodes_file, 'r', encoding='utf-8') as f:
+                self._cached_nodes = json.load(f)
+                return self._cached_nodes
+
+        self._cached_nodes = {}
+        return {}
+
     def list_entity_types(self) -> ToolResult:
         """Discover what entity types exist in the knowledge graph."""
         start_time = datetime.now()
 
         try:
-            nodes_file = self.gold_path / "knowledge_graph" / "nodes.json"
-            if not nodes_file.exists():
+            nodes = self._load_nodes()
+            if not nodes:
                 return ToolResult(
                     tool_name="list_entity_types",
                     success=False,
@@ -815,16 +902,11 @@ class RetrievalToolkit:
                     message="Knowledge graph nodes not found"
                 )
 
-            with open(nodes_file, 'r', encoding='utf-8') as f:
-                nodes = json.load(f)
-
-            # Count entities per type
             type_counts = {}
             for node_id, node_data in nodes.items():
                 node_type = node_data.get("node_type", node_data.get("type", "UNKNOWN"))
                 type_counts[node_type] = type_counts.get(node_type, 0) + 1
 
-            # Sort by count descending
             sorted_types = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)
             results = [{"type": t, "count": c} for t, c in sorted_types]
 
@@ -941,7 +1023,7 @@ class RetrievalToolkit:
 
             result = {
                 "chunk_id": chunk_id,
-                "text": chunk_data.get("text_english") or chunk_data.get("text_anonymized", chunk_data.get("text_original", "")),
+                "text": chunk_data.get("summary") or chunk_data.get("text_english") or chunk_data.get("text_anonymized", ""),
                 "thread_id": chunk_data.get("thread_id"),
                 "thread_subject": chunk_data.get("thread_subject"),
                 "email_position": chunk_data.get("email_position"),
@@ -1027,6 +1109,30 @@ class RetrievalToolkit:
         start_time = datetime.now()
 
         try:
+            # Azure pipeline: attachment chunks are in Cosmos DB
+            if self.cosmos and self.cosmos.is_configured:
+                chunk_data = self.cosmos.get_chunk(attachment_id)
+                if chunk_data:
+                    result = {
+                        "attachment_id": attachment_id,
+                        "filename": chunk_data.get("source_attachment_filename"),
+                        "extracted_text": (chunk_data.get("summary") or chunk_data.get("text_english", ""))[:2000],
+                        "text_length": chunk_data.get("token_count", 0),
+                        "extraction_method": chunk_data.get("source_type"),
+                    }
+                    return ToolResult(
+                        tool_name="get_attachment_content",
+                        success=True, data=result,
+                        message="Attachment content retrieved (Cosmos DB)",
+                        execution_time=(datetime.now() - start_time).total_seconds()
+                    )
+                return ToolResult(
+                    tool_name="get_attachment_content",
+                    success=False, data=None,
+                    message=f"Attachment not found in Cosmos: {attachment_id}"
+                )
+
+            # Local fallback
             if not self.silver_path:
                 return ToolResult(
                     tool_name="get_attachment_content",
@@ -1035,9 +1141,7 @@ class RetrievalToolkit:
                     message="Silver path not configured"
                 )
 
-            # Check attachment content cache
             content_path = self.silver_path / "attachment_content" / f"{attachment_id}.json"
-
             if content_path.exists():
                 with open(content_path, 'r', encoding='utf-8') as f:
                     content_data = json.load(f)
@@ -1049,21 +1153,16 @@ class RetrievalToolkit:
                     "text_length": content_data.get("text_length", 0),
                     "extraction_method": content_data.get("extraction_method")
                 }
-
-                execution_time = (datetime.now() - start_time).total_seconds()
-
                 return ToolResult(
                     tool_name="get_attachment_content",
-                    success=True,
-                    data=result,
+                    success=True, data=result,
                     message="Attachment content retrieved",
-                    execution_time=execution_time
+                    execution_time=(datetime.now() - start_time).total_seconds()
                 )
 
             return ToolResult(
                 tool_name="get_attachment_content",
-                success=False,
-                data=None,
+                success=False, data=None,
                 message=f"Attachment content not found: {attachment_id}"
             )
 
@@ -1071,8 +1170,7 @@ class RetrievalToolkit:
             logger.error(f"Get attachment content failed: {e}")
             return ToolResult(
                 tool_name="get_attachment_content",
-                success=False,
-                data=None,
+                success=False, data=None,
                 message=str(e)
             )
 
@@ -1124,19 +1222,7 @@ class RetrievalToolkit:
 
         try:
             # Load all communities at the chosen level
-            communities_path = self.gold_path / "communities" / f"level_{level}"
-            if not communities_path.exists():
-                return ToolResult(
-                    tool_name="global_search",
-                    success=False,
-                    data={},
-                    message=f"Community level {level} not found"
-                )
-
-            communities = []
-            for comm_file in sorted(communities_path.glob("*.json")):
-                with open(comm_file, 'r', encoding='utf-8') as f:
-                    communities.append(json.load(f))
+            communities = self._load_communities(level)
 
             if not communities:
                 return ToolResult(
@@ -1393,14 +1479,19 @@ class RetrievalToolkit:
                 comm_id = entity_to_comm.get(node_id)
                 if comm_id and comm_id not in seen_comms:
                     seen_comms.add(comm_id)
-                    # Load community summary
-                    for level_dir in sorted(self.gold_path.glob("communities/level_*")):
-                        comm_file = level_dir / f"{comm_id}.json"
-                        if comm_file.exists():
-                            with open(comm_file, 'r', encoding='utf-8') as f:
-                                comm_data = json.load(f)
+                    # Load community summary from Cosmos or local
+                    if self.cosmos and self.cosmos.is_configured:
+                        comm_data = self.cosmos.get_community(comm_id, level=0)
+                        if comm_data:
                             community_reports.append(comm_data.get("summary", ""))
-                            break
+                    else:
+                        for level_dir in sorted(self.gold_path.glob("communities/level_*")):
+                            comm_file = level_dir / f"{comm_id}.json"
+                            if comm_file.exists():
+                                with open(comm_file, 'r', encoding='utf-8') as f:
+                                    comm_data = json.load(f)
+                                community_reports.append(comm_data.get("summary", ""))
+                                break
 
             # Step 4: Load source text from chunks
             source_text_parts = []
@@ -1474,30 +1565,30 @@ class RetrievalToolkit:
         """Build reverse mapping from node_id to community_id. Cached."""
         if not hasattr(self, '_entity_to_community'):
             self._entity_to_community = {}
-            communities_path = self.gold_path / "communities" / f"level_{level}"
-            if communities_path.exists():
-                for comm_file in communities_path.glob("*.json"):
-                    with open(comm_file, 'r', encoding='utf-8') as f:
-                        comm = json.load(f)
-                    comm_id = comm.get("community_id", comm_file.stem)
-                    for node_id in comm.get("node_ids", []):
-                        self._entity_to_community[node_id] = comm_id
+            communities = self._load_communities(level)
+            for comm in communities:
+                comm_id = comm.get("community_id", "")
+                for node_id in comm.get("node_ids", []):
+                    self._entity_to_community[node_id] = comm_id
             logger.info(f"Entity-to-community index: {len(self._entity_to_community)} mappings")
         return self._entity_to_community
 
     def _load_chunk(self, chunk_id: str) -> Optional[Dict[str, Any]]:
-        """Load chunk data from Silver layer."""
+        """Load chunk data from Cosmos DB (Azure pipeline) or Silver layer (local)."""
+        # Azure pipeline: read from Cosmos DB
+        if self.cosmos and self.cosmos.is_configured:
+            return self.cosmos.get_chunk(chunk_id)
+
+        # Local fallback: read from Silver files
         if not self.silver_path:
             return None
 
-        # chunk_id is already a safe filename — direct lookup
         for pattern in ["not_personal/email_chunks", "not_personal/attachment_chunks"]:
             chunk_path = self.silver_path / pattern / f"{chunk_id}.json"
             if chunk_path.exists():
                 with open(chunk_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
 
-        # Glob fallback
         for chunk_file in self.silver_path.glob(f"**/{chunk_id}.json"):
             with open(chunk_file, 'r', encoding='utf-8') as f:
                 return json.load(f)

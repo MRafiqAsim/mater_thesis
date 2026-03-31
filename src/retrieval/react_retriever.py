@@ -101,6 +101,7 @@ class ReActRetriever:
         silver_path: Optional[str] = None,
         config: Optional[ReActConfig] = None,
         mode: str = "local",
+        cosmos_adapter=None,
     ):
         """
         Initialize the ReAct retriever.
@@ -110,13 +111,17 @@ class ReActRetriever:
             silver_path: Path to Silver layer with chunks
             config: Agent configuration
             mode: Processing mode — "local" uses local embeddings
+            cosmos_adapter: Optional CosmosAdapter for DB-backed retrieval
         """
         self.gold_path = Path(gold_path)
         self.silver_path = Path(silver_path) if silver_path else None
         self.config = config or ReActConfig()
 
         # Initialize toolkit
-        self.toolkit = RetrievalToolkit(str(gold_path), str(silver_path) if silver_path else None, mode=mode)
+        self.toolkit = RetrievalToolkit(
+            str(gold_path), str(silver_path) if silver_path else None,
+            mode=mode, cosmos_adapter=cosmos_adapter,
+        )
 
         # Initialize LLM client
         self.client = None

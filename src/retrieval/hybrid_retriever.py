@@ -106,6 +106,7 @@ class HybridRetriever:
         silver_path: Optional[str] = None,
         config: Optional[HybridConfig] = None,
         mode: str = "llm",
+        cosmos_adapter=None,
     ):
         """
         Initialize the hybrid retriever.
@@ -115,17 +116,25 @@ class HybridRetriever:
             silver_path: Path to Silver layer
             config: Retrieval configuration
             mode: Processing mode — "local" uses local models, "llm" uses Azure OpenAI
+            cosmos_adapter: Optional CosmosAdapter for DB-backed retrieval (Azure pipeline)
         """
         self.gold_path = Path(gold_path)
         self.silver_path = Path(silver_path) if silver_path else None
         self.config = config or HybridConfig()
         self.mode = mode
+        self.cosmos = cosmos_adapter
 
         # Initialize toolkit
-        self.toolkit = RetrievalToolkit(str(gold_path), str(silver_path) if silver_path else None, mode=mode)
+        self.toolkit = RetrievalToolkit(
+            str(gold_path), str(silver_path) if silver_path else None,
+            mode=mode, cosmos_adapter=cosmos_adapter,
+        )
 
         # Initialize ReAct retriever
-        self.react_retriever = ReActRetriever(str(gold_path), str(silver_path) if silver_path else None, mode=mode)
+        self.react_retriever = ReActRetriever(
+            str(gold_path), str(silver_path) if silver_path else None,
+            mode=mode, cosmos_adapter=cosmos_adapter,
+        )
 
         # LLM client for answer generation (always try — even local mode uses LLM for answers)
         self.llm_client = None
@@ -601,7 +610,19 @@ class HybridRetriever:
         )
 
     def _get_all_thread_subjects(self) -> List[str]:
-        """Get all unique thread subjects from silver layer."""
+        """Get all unique thread subjects from Cosmos DB or Silver layer."""
+        # Azure pipeline: query Cosmos for distinct thread subjects
+        if self.cosmos and self.cosmos.is_configured:
+            try:
+                container = self.cosmos._get_container("chunks")
+                query = "SELECT DISTINCT VALUE c.thread_subject FROM c WHERE c.thread_subject != null"
+                items = list(container.query_items(query=query, enable_cross_partition_query=True))
+                return [s for s in items if s]
+            except Exception as e:
+                logger.warning(f"Cosmos thread subjects query failed: {e}")
+                return []
+
+        # Local fallback
         if not self.silver_path:
             return []
 
@@ -714,21 +735,18 @@ class HybridRetriever:
         if not self.gold_path:
             return candidates
 
-        # Load graph entity names (cached)
+        # Load graph entity names (cached) — uses toolkit's Cosmos-aware loader
         if not hasattr(self, '_graph_entity_names'):
             self._graph_entity_names = {}
-            graph_file = Path(self.gold_path) / "knowledge_graph" / "nodes.json"
-            if graph_file.exists():
-                try:
-                    with open(graph_file, 'r', encoding='utf-8') as f:
-                        graph_data = json.load(f)
-                    for node_id, node in graph_data.items():
-                        name = node.get("name", node_id)
-                        node_type = node.get("node_type", node.get("type", ""))
-                        if name and node_type not in ("CHUNK", "THREAD", ""):
-                            self._graph_entity_names[name.lower()] = name
-                except Exception:
-                    pass
+            try:
+                nodes = self.toolkit._load_nodes()
+                for node_id, node in nodes.items():
+                    name = node.get("name", node_id)
+                    node_type = node.get("node_type", node.get("type", ""))
+                    if name and node_type not in ("CHUNK", "THREAD", ""):
+                        self._graph_entity_names[name.lower()] = name
+            except Exception:
+                pass
 
         if not self._graph_entity_names:
             return candidates
@@ -761,9 +779,6 @@ class HybridRetriever:
 
         This gives the LLM full context regardless of which entry point was hit.
         """
-        if not self.silver_path:
-            return chunks
-
         existing_ids = {c.get("chunk_id") for c in chunks}
 
         # Collect unique thread_ids from results
@@ -776,7 +791,79 @@ class HybridRetriever:
         if not thread_ids:
             return chunks
 
-        # 1. Search Silver layer for sibling chunks
+        # Azure pipeline: use Cosmos DB
+        if self.cosmos and self.cosmos.is_configured:
+            return self._expand_by_thread_cosmos(chunks, thread_ids, existing_ids, max_siblings)
+
+        # Local fallback: read Silver files
+        if not self.silver_path:
+            return chunks
+
+        return self._expand_by_thread_local(chunks, thread_ids, existing_ids, max_siblings)
+
+    def _expand_by_thread_cosmos(
+        self,
+        chunks: List[Dict[str, Any]],
+        thread_ids: set,
+        existing_ids: set,
+        max_siblings: int,
+    ) -> List[Dict[str, Any]]:
+        """Thread expansion using Cosmos DB — no Silver file reads."""
+        sibling_chunks = []
+        summary_context = []
+
+        for tid in thread_ids:
+            # 1. Sibling chunks from same thread
+            thread_chunks = self.cosmos.get_chunks_by_thread(tid)
+            for chunk_data in thread_chunks:
+                if len(sibling_chunks) >= max_siblings:
+                    break
+                cid = chunk_data.get("chunk_id")
+                if cid and cid not in existing_ids:
+                    sibling_chunks.append({
+                        "chunk_id": cid,
+                        "text": chunk_data.get("summary") or chunk_data.get("text_english") or "",
+                        "thread_id": tid,
+                        "thread_subject": chunk_data.get("thread_subject"),
+                        "source_type": chunk_data.get("source_type", "email"),
+                        "source_attachment_filename": chunk_data.get("source_attachment_filename", ""),
+                        "has_attachments": chunk_data.get("has_attachments", False),
+                        "similarity_score": 0.0,
+                        "_expanded": True,
+                    })
+                    existing_ids.add(cid)
+
+            # 2. Thread summary
+            summary_data = self.cosmos.get_thread_summary(tid)
+            if summary_data:
+                summary_text = summary_data.get("summary", "")
+                if summary_text:
+                    summary_context.append({
+                        "chunk_id": f"summary_{tid}",
+                        "text": f"[Thread Summary] {summary_data.get('subject', '')}: {summary_text}",
+                        "thread_id": tid,
+                        "source_type": "thread_summary",
+                        "similarity_score": 0.0,
+                        "_expanded": True,
+                    })
+
+        expanded_count = len(sibling_chunks) + len(summary_context)
+        if expanded_count:
+            logger.info(
+                f"Thread expansion (Cosmos): added {len(sibling_chunks)} sibling chunks, "
+                f"{len(summary_context)} summaries from {len(thread_ids)} threads"
+            )
+
+        return list(chunks) + sibling_chunks + summary_context
+
+    def _expand_by_thread_local(
+        self,
+        chunks: List[Dict[str, Any]],
+        thread_ids: set,
+        existing_ids: set,
+        max_siblings: int,
+    ) -> List[Dict[str, Any]]:
+        """Thread expansion using local Silver files."""
         search_dirs = [
             self.silver_path / "not_personal" / "email_chunks",
             self.silver_path / "not_personal" / "attachment_chunks",
@@ -810,7 +897,7 @@ class HybridRetriever:
                 except Exception:
                     continue
 
-        # 2. Load thread summaries for matched threads
+        # Load thread summaries
         summary_context = []
         thread_summaries_dir = self.silver_path / "not_personal" / "thread_summaries"
         if thread_summaries_dir.exists():
@@ -829,7 +916,6 @@ class HybridRetriever:
                                 "similarity_score": 0.0,
                                 "_expanded": True,
                             })
-                            # 3. Follow cross-references to attachment summaries
                             for att_id in summary_data.get("attachment_ids", []):
                                 att_summary = self._load_attachment_summary(att_id)
                                 if att_summary:
@@ -844,12 +930,6 @@ class HybridRetriever:
                 except Exception:
                     continue
 
-        # TODO: Email summaries (disabled — sibling chunks + thread summary suffice)
-        # email_summaries_dir = self.silver_path / "not_personal" / "email_summaries"
-        # if email_summaries_dir.exists():
-        #     for summary_file in email_summaries_dir.glob("*.json"):
-        #         ...
-
         expanded_count = len(sibling_chunks) + len(summary_context)
         if expanded_count:
             logger.info(
@@ -860,13 +940,12 @@ class HybridRetriever:
         return list(chunks) + sibling_chunks + summary_context
 
     def _load_attachment_summary(self, attachment_id: str) -> Optional[Dict[str, Any]]:
-        """Load an attachment summary by ID from Silver layer."""
+        """Load an attachment summary by ID from Silver layer (local only)."""
         if not self.silver_path:
             return None
         summary_dir = self.silver_path / "not_personal" / "attachment_summaries"
         if not summary_dir.exists():
             return None
-        # Try exact match and sanitized match
         safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in attachment_id)[:100]
         for candidate in (f"{attachment_id}.json", f"{safe_id}.json"):
             path = summary_dir / candidate

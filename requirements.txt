@@ -73,6 +73,15 @@ tqdm>=4.66.0
 tenacity>=8.2.0
 
 # ============================================
+# Azure Services
+# ============================================
+azure-storage-file-datalake>=12.17.0   # ADLS Gen2
+azure-identity>=1.19.0
+azure-search-documents>=11.6.0b5       # Azure AI Search
+azure-cosmos>=4.7.0                    # Cosmos DB NoSQL
+gremlinpython>=3.7.2                   # Cosmos DB Gremlin
+
+# ============================================
 # UI
 # ============================================
 gradio>=4.0.0
